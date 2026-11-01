@@ -24,3 +24,11 @@ git fetch upstream && git checkout ios && git merge upstream/main
 3. `cargo check -p horizon-client --no-default-features --features audio --target aarch64-apple-ios --lib`
    catches a new desktop-only dependency.
 4. If `VANILLA_VERSION` changed, run `ios/prepare_resources.sh` again.
+
+## The patched winit (`ios/third_party/winit`)
+
+winit 0.30.13 with two iOS changes, each marked `horizon-ios:` (`git grep -n "horizon-ios:" ios/third_party`):
+the UIScene life cycle UIKit requires of apps built with current SDKs (windows join the app's
+`UIWindowScene`), and windows that always fill the screen. It applies only to the ios/ workspace.
+When upstream moves to another winit, port these changes to that version (or drop them once winit
+has them) and update the path in `ios/Cargo.toml`.

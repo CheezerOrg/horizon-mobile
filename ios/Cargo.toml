@@ -22,6 +22,8 @@ horizon-threads = { path = "../crates/horizon-threads" }
 [patch.crates-io]
 wgpu-hal = { path = "../third_party/wgpu-hal" }
 naga = { path = "../third_party/naga" }
+# iOS only: winit 0.30.13 with the UIScene life cycle UIKit requires (third_party/winit, `horizon-ios:`).
+winit = { path = "third_party/winit" }
 
 [profile.dev]
 debug = "line-tables-only"

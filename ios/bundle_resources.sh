@@ -1,6 +1,6 @@
 #!/bin/bash
 # Xcode's "Bundle resources" build phase: copies the prepared game resources into the app as
-# Horizon.app/resources, where the game looks beside its executable (game.rs Options::parse).
+# Horizon.app/game, which app/main.m passes the game as --resources.
 # They are Mojang's files: the app is for your own devices, never to share.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -15,6 +15,7 @@ if [ ! -f "$src/horizon-resources.json" ]; then
     echo "error: no prepared resources in $src: run ios/prepare_resources.sh first" >&2
     exit 1
 fi
-dest="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/resources"
+dest="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/game"
 mkdir -p "$dest"
-rsync -a --delete "$src/" "$dest/"
+# The preparation's logs and lock are not game data.
+rsync -a --delete --exclude "*.log" --exclude ".horizon-prepare.lock" "$src/" "$dest/"
