@@ -329,14 +329,14 @@ pub fn main_with(mods: crate::mod_api::Mods) {
 /// The JVM raises its open-file limit to the hard limit as it starts
 /// (`-XX:+MaxFDLimit`, on by default), so a vanilla server may hold as many
 /// sockets and region files as the host allows, not the soft default (often
-/// 1024 in a container). The same here; macOS caps it at `OPEN_MAX`, as the
+/// 1024 in a container). The same here; macOS and iOS cap it at `OPEN_MAX`, as the
 /// JVM does there.
 fn raise_open_file_limit() {
     #[cfg(unix)]
     {
         use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
         let limit = getrlimit(Resource::Nofile);
-        let hard = if cfg!(target_os = "macos") {
+        let hard = if cfg!(target_vendor = "apple") {
             Some(limit.maximum.map_or(10_240, |h| h.min(10_240)))
         } else {
             limit.maximum

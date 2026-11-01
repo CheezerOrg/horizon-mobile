@@ -1,0 +1,54 @@
+# Horizon.app for iPhone and iPad: `xcodegen` here writes Horizon.xcodeproj (gitignored).
+# Your signing team and bundle id go in Local.xcconfig (gitignored; see README.md).
+name: Horizon
+options:
+  bundleIdPrefix: dev.horizon
+  deploymentTarget:
+    iOS: "16.0"
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+settings:
+  base:
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    ENABLE_BITCODE: NO
+    DEAD_CODE_STRIPPING: YES
+targets:
+  Horizon:
+    type: application
+    platform: iOS
+    sources:
+      - path: app/main.m
+    settings:
+      base:
+        PRODUCT_NAME: Horizon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: app/Info.plist
+        # build.sh copies the Rust library here for the platform being built.
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/target/xcode/$(PLATFORM_NAME)
+        OTHER_LDFLAGS: -lhorizon_ios -lc++ -liconv
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: UIKit.framework
+      - sdk: Foundation.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreAudio.framework
+      - sdk: AVFoundation.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+    preBuildScripts:
+      - name: Rust
+        script: exec "$PROJECT_DIR/build.sh"
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      - name: Bundle resources
+        script: exec "$PROJECT_DIR/bundle_resources.sh"
+        basedOnDependencyAnalysis: false

@@ -1,0 +1,6 @@
+// Copy to Local.xcconfig (gitignored) and fill in your own signing.
+// DEVELOPMENT_TEAM: Xcode › Settings › Accounts › your Apple ID › Team ID (a free account works;
+// its builds expire after 7 days).
+DEVELOPMENT_TEAM = ABCDE12345
+// Unique to you: Apple refuses an id another team already signed.
+PRODUCT_BUNDLE_IDENTIFIER = dev.horizon.ios.yourname

@@ -1,0 +1,37 @@
+# The iOS app's Rust half: a static library Xcode links into Horizon.app (project.yml).
+# Its own workspace, as launcher/ is, so the game's root Cargo.toml stays upstream's.
+[package]
+name = "horizon-ios"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# No controllers (gilrs has no iOS backend) and no WebAssembly mods (iOS allows no JIT).
+horizon-client = { path = "../crates/horizon-client", default-features = false, features = ["audio"] }
+horizon-threads = { path = "../crates/horizon-threads" }
+
+[workspace]
+
+# Copied from the root Cargo.toml: patches apply only from the workspace that builds.
+# Re-copy them when upstream changes its block (MERGING.md).
+[patch.crates-io]
+wgpu-hal = { path = "../third_party/wgpu-hal" }
+naga = { path = "../third_party/naga" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
