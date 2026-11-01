@@ -53,8 +53,25 @@ if [ -z "$("$launcher" --json versions --installed | field "['selected']")" ]; t
     "$launcher" install latest
 fi
 
+# Mojang's Java (downloaded with Minecraft) has javac, but on macOS inside jre.bundle/Contents/Home,
+# where the released launcher's preparer doesn't look: point JAVA_HOME at it.
+mojang_java() {
+    [ -n "${JAVA_HOME:-}" ] && return
+    local javac
+    javac="$(find "$HORIZON_LAUNCHER_HOME/minecraft/runtime" -path '*/Contents/Home/bin/javac' -type f 2>/dev/null | sort -r | head -1)"
+    [ -n "$javac" ] && export JAVA_HOME="${javac%/bin/javac}" && echo "Java: $JAVA_HOME"
+    return 0
+}
+
 echo "==> Downloading Minecraft $version from Mojang and preparing it"
-"$launcher" prepare --download
+mojang_java
+if ! "$launcher" prepare --download; then
+    # The first run downloads Java in the same step that then can't find it: once more with it.
+    [ -z "${JAVA_HOME:-}" ] || exit 1
+    mojang_java
+    [ -n "${JAVA_HOME:-}" ] || exit 1
+    "$launcher" prepare --download
+fi
 tag="$("$launcher" --json versions --installed | field "['selected']")"
 prepared="$HORIZON_LAUNCHER_HOME/versions/$tag/.local/horizon-client/$version"
 
