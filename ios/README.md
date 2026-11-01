@@ -7,7 +7,7 @@ upload it or commit what it is built from.
 ## Once
 
 1. Rust targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`; `brew install xcodegen`.
-2. `ios/prepare_resources.sh`: builds the launcher, signs you in with the Microsoft account that
+2. `ios/prepare_resources.sh`: downloads the released launcher (checksum-verified), signs you in with the Microsoft account that
    owns Minecraft (a code to enter in the browser), downloads Minecraft and prepares it into
    `.local/horizon-client/<version>`. The launcher keeps its own data in `.local/ios-launcher`.
 3. `cp ios/Local.xcconfig.example ios/Local.xcconfig` and set your team and a bundle id of yours.
