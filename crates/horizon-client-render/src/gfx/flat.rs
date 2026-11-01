@@ -271,8 +271,12 @@ pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let flags = adapter.get_downlevel_capabilities().flags;
     let limits = device.limits();
-    flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && limits.max_storage_buffers_per_shader_stage >= 3
+    // Phase 2 draws indirect (`draw_phase2`): not on devices without it (the iOS simulator).
+    flags.contains(
+        wgpu::DownlevelFlags::VERTEX_STORAGE
+            | wgpu::DownlevelFlags::COMPUTE_SHADERS
+            | wgpu::DownlevelFlags::INDIRECT_EXECUTION,
+    ) && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_storage_buffer_binding_size >= super::arena::PAGE_BYTES
 }
 
