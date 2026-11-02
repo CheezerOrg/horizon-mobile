@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod account;
+
 #[global_allocator]
 static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
 
@@ -13,6 +15,9 @@ pub extern "C" fn horizon_main() {
     if let Err(e) = prepare_home(&home) {
         eprintln!("Horizon: could not prepare {}: {e}", home.display());
     }
+    // The account signed in last time, renewed in the background while the game starts.
+    account::register();
+    horizon_client::msa::restore();
     horizon_client::entry::main();
 }
 

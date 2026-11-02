@@ -14,6 +14,11 @@ crate-type = ["staticlib"]
 # No controllers (gilrs has no iOS backend) and no WebAssembly mods (iOS allows no JIT).
 horizon-client = { path = "../crates/horizon-client", default-features = false, features = ["audio"] }
 horizon-threads = { path = "../crates/horizon-threads" }
+# The Microsoft sign-in's refresh token in the Keychain, and Safari for its link (account.rs).
+security-framework = { version = "3", default-features = false }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSDictionary"] }
+block2 = "0.6"
 
 [workspace]
 

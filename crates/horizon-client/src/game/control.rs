@@ -1157,7 +1157,8 @@ impl Game<'_> {
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
                     "agent" => Page::Agent,
-                    "touch" => Page::Touch, // ios-port:
+                    "touch" => Page::Touch,     // ios-port:
+                    "account" => Page::Account, // ios-port:
                     other => return Err(format!("unknown options page {other}").into()),
                 };
                 if self.screen == Screen::Playing && self.title.is_none() {

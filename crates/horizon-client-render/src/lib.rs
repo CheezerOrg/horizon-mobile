@@ -83,6 +83,7 @@ pub mod mod_browser;
 pub mod mod_list;
 pub mod model_library;
 pub mod models;
+pub mod msa; // ios-port: the game's own Microsoft sign-in
 pub mod multiline_edit;
 pub mod native_emissive;
 pub mod options_file;

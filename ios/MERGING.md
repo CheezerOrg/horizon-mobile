@@ -24,6 +24,15 @@ git fetch upstream && git checkout ios && git merge upstream/main
   `options touch` in `game/control.rs`, and the `touch` field of `PadSettings` in `gamepad.rs`
   (loaded and saved beside the controller's file, as `horizon-touch.txt`). Its strings are a block
   of `horizon.pages.touch*` / `horizon.options.touch.*` keys in `assets/horizon/lang/en_us.json`.
+- **The Microsoft Account page** (`// ios-port:`): `Page::Account` and `Act::Account` in
+  `options_ui.rs` (title, tooltip, rows, both dispatch arms, the button at the end of Horizon
+  Settings), `options account` in `game/control.rs`, `Options::player_name` preferring the
+  signed-in account in `game.rs`, and `auth.rs`'s session in a lock (`set_current` can replace it,
+  `clear_current` signs out) instead of a `OnceLock`. Its strings are the `horizon.pages.account*`
+  / `horizon.account.*` keys after the touch block in `en_us.json`. The flow itself is the
+  fork-only `crates/horizon-client-render/src/msa.rs` (a port of `launcher/src/account.rs`'s
+  device-code sign-in: if upstream changes those requests, follow them there), re-exported in
+  `client_lib.rs`; `ios/src/account.rs` gives it the Keychain and Safari.
 - **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures and
   `TouchSettings`, unit-tested) and `crates/horizon-client/src/game/touch.rs` (the game side).
   Upstream never touches them. `gamepad::length` was made `pub` for them.

@@ -22,6 +22,16 @@ ios/run.sh device     # the connected iPhone or iPad
 Or `cd ios && xcodegen` and open `Horizon.xcodeproj` in Xcode (▶ builds the Rust library too).
 Debug builds use Cargo's `fast` profile; Archive uses `release`.
 
+## Signing in in the game
+
+Online-mode servers need the account that owns Minecraft. With `HORIZON_MSA_CLIENT_ID` set in
+`Local.xcconfig` (an Azure app registration you may use, with public client flows allowed and
+Mojang's Minecraft API approval: [docs/microsoft-account.md](../docs/microsoft-account.md)),
+Options › Horizon Settings › Microsoft Account signs in with a code: Open Link opens
+microsoft.com/link in Safari with the code on the clipboard. The game keeps the Microsoft refresh
+token in the Keychain and signs in again at every start; Sign Out deletes it. Without a client ID
+the page is hidden and the game plays offline, as before.
+
 The game keeps its worlds, options and logs in the app's `Library/Application Support/horizon`;
 on the simulator: `xcrun simctl get_app_container booted <bundle id> data`.
 

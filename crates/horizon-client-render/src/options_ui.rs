@@ -1311,6 +1311,8 @@ pub enum Page {
     Music,
     /// The touch controls' settings. ios-port:
     Touch,
+    /// Signing in with a Microsoft account in the game (`msa`). ios-port:
+    Account,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Act {
@@ -1355,6 +1357,8 @@ pub(crate) enum Act {
     PlayMusicTrack(String, String),
     /// The Music page: turn this track off, or back on.
     MusicTrackOn(String, bool),
+    /// The Account page's buttons. ios-port:
+    Account(crate::msa::Action),
 }
 enum WKind {
     Button {
@@ -1751,6 +1755,57 @@ fn pvp_rows() -> Vec<Result<crate::extras::Item, &'static str>> {
         .into_iter()
         .map(|r| r.map(crate::extras::Item::Pvp))
         .collect()
+}
+/// ios-port: the Account page: where the sign-in stands, then what can be done about it.
+fn account_rows() -> Vec<Row> {
+    use crate::msa::{Action, Status};
+    let one = |key: &str, action: Action| {
+        Row::Buttons(button(0.0, 0.0, 310.0, tr(key), Act::Account(action)), None)
+    };
+    let note = |key: &str| Row::Note(lang::get(key));
+    match crate::msa::status() {
+        Status::SignedOut => vec![
+            note("horizon.account.signed_out"),
+            note("horizon.account.why"),
+            one("horizon.account.sign_in", Action::SignIn),
+        ],
+        Status::Working => vec![
+            note("horizon.account.working"),
+            one("gui.cancel", Action::Cancel),
+        ],
+        Status::Code { url, code } => vec![
+            Row::Note(lang::tr("horizon.account.enter_code", &[&url])),
+            Row::Note(code),
+            if crate::msa::can_open_link() {
+                Row::Buttons(
+                    button(
+                        0.0,
+                        0.0,
+                        150.0,
+                        tr("horizon.account.open_link"),
+                        Act::Account(Action::OpenLink),
+                    ),
+                    Some(button(
+                        0.0,
+                        0.0,
+                        150.0,
+                        tr("gui.cancel"),
+                        Act::Account(Action::Cancel),
+                    )),
+                )
+            } else {
+                one("gui.cancel", Action::Cancel)
+            },
+        ],
+        Status::SignedIn(name) => vec![
+            Row::Note(lang::tr("horizon.account.signed_in", &[&name])),
+            one("horizon.account.sign_out", Action::SignOut),
+        ],
+        Status::Failed(fail) => vec![
+            note(fail.0),
+            one("horizon.account.try_again", Action::SignIn),
+        ],
+    }
 }
 /// The items of PvP & HUD's rows whose label, with any of their first values, is wider than a
 /// half-width button holds (`width` measures text with the screen's font): those take the
@@ -2193,6 +2248,7 @@ impl OptionsUi {
             Page::SplitSetup => "horizon.pages.split_setup",
             Page::Music => "horizon.pages.music",
             Page::Touch => "horizon.pages.touch", // ios-port:
+            Page::Account => "horizon.pages.account", // ios-port:
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -2659,6 +2715,7 @@ impl OptionsUi {
             }
             // ios-port:
             Page::Touch => pairs(&horizon_client_input::touch::TouchOpt::ALL.map(Opt::Touch)),
+            Page::Account => account_rows(), // ios-port:
             Page::Mouse => pairs(MOUSE_OPTIONS),
             Page::Chat => pairs(&[
                 Opt::ChatVisibility,
@@ -4062,6 +4119,7 @@ impl OptionsUi {
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
                         Act::ExportRepro => events.push(Event::ExportRepro),
+                        Act::Account(action) => crate::msa::act(action), // ios-port:
                         Act::None => {}
                     }
                 }
@@ -4959,6 +5017,7 @@ impl OptionsUi {
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
                         Act::ExportRepro => events.push(Event::ExportRepro),
+                        Act::Account(action) => crate::msa::act(action), // ios-port:
                         Act::None => {}
                     }
                     return events;

@@ -4,3 +4,8 @@
 DEVELOPMENT_TEAM = ABCDE12345
 // Unique to you: Apple refuses an id another team already signed.
 PRODUCT_BUNDLE_IDENTIFIER = dev.horizon.ios.yourname
+// The Azure app (client) ID the game's Microsoft sign-in uses (Options › Horizon Settings ›
+// Microsoft Account). Without one the page is hidden and the game plays offline. It must be an
+// app registration you may use, with public client flows on and Mojang's Minecraft API approval
+// (docs/microsoft-account.md); never the official launcher's.
+HORIZON_MSA_CLIENT_ID =
