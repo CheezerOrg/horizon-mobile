@@ -6,6 +6,10 @@ use crate::{Error, Result};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 mod dns;
+// The system resolver's C API.
+#[cfg(target_os = "ios")]
+#[allow(unsafe_code)]
+mod dns_sd;
 
 #[derive(Debug)]
 pub(crate) struct Resolved {
@@ -61,8 +65,16 @@ pub fn server_redirect(host: &str, port: u16) -> (String, u16) {
         .map_or_else(|_| (host.to_owned(), port), |r| (r.host, r.port))
 }
 
+#[cfg(not(target_os = "ios"))]
 fn srv_redirect(name: &str) -> Option<(String, u16)> {
     dns::query_srv(name, &dns::system_name_servers(), dns::SERVER_TIMEOUT)
+}
+
+/// iOS keeps `/etc/resolv.conf` from apps: the system resolver asks instead, as long as
+/// JNDI's tries of two name servers.
+#[cfg(target_os = "ios")]
+fn srv_redirect(name: &str) -> Option<(String, u16)> {
+    dns_sd::query_srv(name, dns::SERVER_TIMEOUT * 2)
 }
 
 #[cfg(test)]

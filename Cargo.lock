@@ -1912,6 +1912,7 @@ dependencies = [
  "horizon-core",
  "horizon-world",
  "ipconfig",
+ "libc",
  "log",
  "serde_json",
  "sha1",

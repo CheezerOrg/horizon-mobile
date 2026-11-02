@@ -2,6 +2,8 @@
 //! turn, one UDP try of 1 s (`com.sun.jndi.dns.timeout.retries` = 1), TCP when
 //! the reply is truncated, and the answer's first SRV record. By hand, so the
 //! game needs no async runtime or resolver library for one question.
+// iOS asks the system resolver (dns_sd.rs) and keeps only `read_name` from here.
+#![cfg_attr(target_os = "ios", allow(dead_code))]
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream, UdpSocket},
@@ -177,7 +179,7 @@ fn parse_answer(id: u16, msg: &[u8]) -> Option<Reply> {
 }
 
 /// The name at `at`, absolute (`a.b.`), and where the record continues.
-fn read_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
+pub(super) fn read_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
     let mut name = String::new();
     let mut end = None;
     // Pointers must go backwards; the bound ends a loop of labels and pointers.

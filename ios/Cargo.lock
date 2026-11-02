@@ -1349,6 +1349,7 @@ dependencies = [
  "horizon-core",
  "horizon-world",
  "ipconfig",
+ "libc",
  "serde_json",
  "sha1",
  "sha2",

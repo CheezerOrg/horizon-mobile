@@ -25,6 +25,10 @@ socket2 = { version = "0.5", features = ["all"] }
 [target.'cfg(windows)'.dependencies]
 ipconfig = "0.3.4"
 
+# `poll` on the system resolver's socket, for Minecraft SRV redirects on iOS.
+[target.'cfg(target_os = "ios")'.dependencies]
+libc = "0.2"
+
 # Its own name, not `probe`: Cargo copies every crate's examples into one target/<profile>/examples.
 [[example]]
 name = "protocol_probe"
