@@ -794,6 +794,10 @@ impl Game<'_> {
 
     /// The left stick as the move vector, while playing.
     pub(super) fn pad_move(&self) -> Option<[f32; 2]> {
+        // ios-port: the touch stick drives like a pad's.
+        if let Some(v) = self.touch_move() {
+            return Some(v);
+        }
         let settings = &self.settings.controller;
         if !settings.enabled
             || self.pad_in_menu()

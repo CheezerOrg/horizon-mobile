@@ -465,6 +465,8 @@ mod tick_script;
 mod titles;
 mod tnt;
 mod totem;
+// ios-port: touch controls.
+mod touch;
 mod trading;
 mod transient_blocks;
 mod trial_spawner;
@@ -2536,6 +2538,8 @@ struct Game<'a> {
     tool_highlight: horizon_client::hud_overlays::ToolHighlight,
     /// `Hud.autosaveIndicatorValue`.
     saving_indicator: horizon_client::hud_overlays::SavingIndicator,
+    // ios-port: touch controls.
+    touch: touch::Touches,
     /// This game's world is autosaving this tick (`MinecraftServer.isSaving`).
     autosaving: bool,
     /// `MinecraftServer.ticksUntilAutosave`: the ticks left before the next
@@ -6278,6 +6282,7 @@ impl Game<'_> {
         if show_hud {
             self.draw_pad_guide(&mut batch, guide_from);
         }
+        self.draw_touch(&mut batch); // ios-port: touch controls.
         batch
     }
     fn draw_inventory(&mut self, batch: &mut HudBatch) {
@@ -9862,6 +9867,12 @@ impl Game<'_> {
     /// it a handler both can call and a `gamepad::Route` (screenshot and fullscreen do this). A
     /// screen's own raw keys, text and mods' key hooks stay raw on purpose.
     fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
+        // ios-port: touch controls.
+        if let WindowEvent::Touch(touch) = &event
+            && self.touch_event(event_loop, touch)
+        {
+            return;
+        }
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
             self.physical_buttons.clear();
@@ -11664,6 +11675,7 @@ impl<'a> Game<'a> {
             titles: Default::default(),
             tool_highlight: Default::default(),
             saving_indicator: Default::default(),
+            touch: Default::default(),
             autosaving: false,
             // `computeNextAutosaveInterval` at the clock's 20 ticks a second.
             ticks_until_autosave: 6000,

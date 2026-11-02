@@ -18,4 +18,5 @@ pub mod modifiers;
 pub mod mouse;
 pub mod radial;
 pub mod snap;
+pub mod touch;
 pub mod window;

@@ -992,7 +992,7 @@ impl PadSettings {
     }
 }
 
-fn length(v: [f32; 2]) -> f32 {
+pub fn length(v: [f32; 2]) -> f32 {
     (v[0] * v[0] + v[1] * v[1]).sqrt()
 }
 

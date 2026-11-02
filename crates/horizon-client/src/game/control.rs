@@ -663,6 +663,8 @@ impl Game<'_> {
                 ok()
             }
             "pad" => Ok(Some(self.pad_command(&words)?)),
+            // ios-port: touch controls.
+            "touch" => Ok(Some(self.touch_command(&words, event_loop)?)),
             "key" => {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
                 let action = arg(2)?;

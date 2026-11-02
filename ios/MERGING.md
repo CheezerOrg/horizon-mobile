@@ -14,6 +14,16 @@ git fetch upstream && git checkout ios && git merge upstream/main
   meant for upstream PRs; once one is merged upstream it stops differing here.
 - **`// ios-port:` hooks**: the few lines in upstream files the iOS app needs. List them with
   `git grep -n "ios-port:"` after every merge and check each still sits where it should.
+  Today they are the touch controls' wiring (the `touch` module and field in `game.rs`, the
+  `WindowEvent::Touch` dispatch, `touch_frame` before `poll_pads`, `draw_touch` at the end of the
+  HUD, the stick at the top of `pad_move`, the `touch` control command) and the pointer grab that is
+  the game's own on iOS (`capture`).
+- **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures, unit-tested) and
+  `crates/horizon-client/src/game/touch.rs` (the game side). Upstream never touches them.
+  `gamepad::length` was made `pub` for them.
+
+Test the touch controls on the desktop: launch with `HORIZON_TOUCH=1`, then
+`horizon-ctl touch start|move|end ID X Y` (GUI pixels) plays fingers.
 
 ## After a merge
 

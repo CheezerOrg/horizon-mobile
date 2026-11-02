@@ -1,0 +1,960 @@
+//! Touch controls (the iOS port): fingers on the screen as the player's
+//! movement stick, view, buttons and hotbar while playing, and as the mouse
+//! over menus. Pure logic in GUI pixels: the game feeds it the window's
+//! touches, then acts on what it reports.
+//!
+//! Playing: a floating stick on the left, the view on the right (holding a
+//! finger still there attacks, a quick tap uses), buttons on the right and
+//! beside the hotbar, and the hotbar's slots. Menus: a tap is a left click,
+//! a long press a right click, a drag a left drag, two fingers dragging
+//! scroll and a two-finger tap is a Shift click.
+use crate::gamepad;
+use std::time::{Duration, Instant};
+
+/// Held still this long, a finger right clicks in menus.
+pub const LONG_PRESS: Duration = Duration::from_millis(450);
+/// Held still this long on the view, a finger attacks (mines) until it lifts.
+pub const HOLD_ATTACK: Duration = Duration::from_millis(300);
+/// Lifted within this, a finger that stayed still on the view uses.
+pub const TAP: Duration = Duration::from_millis(250);
+/// The game samples input once per tick: a tap's release waits this long so
+/// the press is seen.
+pub const TAP_HOLD: Duration = Duration::from_millis(60);
+/// The stick's deadzone, as a fraction of its radius.
+pub const MOVE_DEADZONE: f32 = 0.15;
+/// GUI pixels of two-finger travel per scroll-wheel line.
+pub const SCROLL_STEP: f32 = 10.0;
+/// The vanilla hotbar's size in GUI pixels.
+const HOTBAR_WIDTH: f32 = 182.0;
+const HOTBAR_HEIGHT: f32 = 22.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+/// What a touch button (or gesture) stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Jump,
+    /// A toggle: only its press counts.
+    Sneak,
+    Attack,
+    Use,
+    Inventory,
+    Drop,
+    /// The stick pushed all the way forward.
+    Sprint,
+    /// Opens the pause menu while playing.
+    Pause,
+    /// Closes the open screen (Escape).
+    Back,
+}
+
+impl Control {
+    /// The buttons drawn while playing.
+    pub const PLAY: [Control; 7] = [
+        Control::Pause,
+        Control::Jump,
+        Control::Sneak,
+        Control::Attack,
+        Control::Use,
+        Control::Inventory,
+        Control::Drop,
+    ];
+
+    /// The vanilla key mapping it acts as; `None` for the ones the game
+    /// handles itself.
+    pub fn mapping(self) -> Option<&'static str> {
+        Some(match self {
+            Control::Jump => "key.jump",
+            Control::Sneak => "key.sneak",
+            Control::Attack => "key.attack",
+            Control::Use => "key.use",
+            Control::Inventory => "key.inventory",
+            Control::Drop => "key.drop",
+            Control::Sprint => "key.sprint",
+            Control::Pause | Control::Back => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Right,
+}
+
+/// What the game does with the touches since the last `take`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Output {
+    Press(Control),
+    Release(Control),
+    Hotbar(u8),
+    /// The pointer moved to this GUI position.
+    PointerMove([f32; 2]),
+    PointerPress(Button, [f32; 2]),
+    PointerRelease(Button, [f32; 2]),
+    /// A left click with Shift held.
+    ShiftClick([f32; 2]),
+    /// Scroll-wheel lines, positive up.
+    Scroll(f32),
+}
+
+/// Who the fingers drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Play,
+    /// A screen is open; `back` shows a button that closes it.
+    Menu {
+        back: bool,
+    },
+}
+
+/// `[x, y, width, height]` in GUI pixels.
+pub type Rect = [f32; 4];
+
+fn contains(r: Rect, p: [f32; 2]) -> bool {
+    p[0] >= r[0] && p[0] < r[0] + r[2] && p[1] >= r[1] && p[1] < r[1] + r[3]
+}
+
+fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Where the controls sit on a screen of `width` x `height` GUI pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub width: f32,
+    pub height: f32,
+    /// A button's side.
+    pub unit: f32,
+    /// Kept clear at the left and right edges (the notch, rounded corners).
+    pub inset: f32,
+    /// Mirrored: the stick on the right, the buttons on the left.
+    pub left_handed: bool,
+}
+
+impl Layout {
+    fn mirror(&self, r: Rect) -> Rect {
+        if self.left_handed {
+            [self.width - r[0] - r[2], r[1], r[2], r[3]]
+        } else {
+            r
+        }
+    }
+
+    fn mirror_x(&self, x: f32) -> f32 {
+        if self.left_handed { self.width - x } else { x }
+    }
+
+    /// A finger travelling less than this counts as held still.
+    pub fn slop(&self) -> f32 {
+        self.unit * 0.25
+    }
+
+    /// The stick's reach from where the finger landed.
+    pub fn stick_radius(&self) -> f32 {
+        self.unit * 1.1
+    }
+
+    /// The button's rectangle; `None` for controls with no button.
+    pub fn rect(&self, control: Control) -> Option<Rect> {
+        let (w, h, u) = (self.width, self.height, self.unit);
+        let m = u * 0.3;
+        let right = w - self.inset - m;
+        let corner = u * 0.7;
+        let hotbar = w / 2.0 - HOTBAR_WIDTH / 2.0;
+        let r = match control {
+            // Top left: toasts and effect icons take the top right.
+            Control::Pause | Control::Back => [self.inset + m, m * 0.5, corner, corner],
+            Control::Jump => [right - u, h - m - u, u, u],
+            Control::Sneak => [right - 2.0 * u - m, h - m - u, u, u],
+            Control::Attack => [right - u, h - 2.0 * (m + u), u, u],
+            Control::Use => [right - 2.0 * u - m, h - 2.0 * (m + u), u, u],
+            Control::Inventory => [
+                hotbar + HOTBAR_WIDTH + 2.0,
+                h - HOTBAR_HEIGHT,
+                HOTBAR_HEIGHT,
+                HOTBAR_HEIGHT,
+            ],
+            Control::Drop => [
+                hotbar - 2.0 - HOTBAR_HEIGHT,
+                h - HOTBAR_HEIGHT,
+                HOTBAR_HEIGHT,
+                HOTBAR_HEIGHT,
+            ],
+            Control::Sprint => return None,
+        };
+        Some(self.mirror(r))
+    }
+
+    /// The button under `p` in `mode`.
+    pub fn button_at(&self, p: [f32; 2], mode: Mode) -> Option<Control> {
+        match mode {
+            Mode::Play => Control::PLAY
+                .into_iter()
+                .find(|&c| self.rect(c).is_some_and(|r| contains(r, p))),
+            Mode::Menu { back: true } => {
+                (self.rect(Control::Back).is_some_and(|r| contains(r, p))).then_some(Control::Back)
+            }
+            Mode::Menu { back: false } => None,
+        }
+    }
+
+    /// The hotbar slot under `p` (vanilla's 20-pixel slots, centred at the
+    /// bottom).
+    pub fn hotbar_slot(&self, p: [f32; 2]) -> Option<u8> {
+        let x = p[0] - (self.width / 2.0 - HOTBAR_WIDTH / 2.0);
+        (p[1] >= self.height - HOTBAR_HEIGHT - 1.0 && (0.0..HOTBAR_WIDTH).contains(&x))
+            .then(|| ((x / 20.0) as u8).min(8))
+    }
+
+    /// The part of the screen where a finger becomes the stick.
+    pub fn in_stick_zone(&self, p: [f32; 2]) -> bool {
+        self.mirror_x(p[0]) < self.width * 0.4
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MenuState {
+    /// Not yet a tap, a drag or a long press.
+    Pending,
+    Dragging,
+    /// The long press clicked; the rest of the touch does nothing.
+    Done,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Role {
+    Button(Control),
+    Hotbar,
+    Stick {
+        origin: [f32; 2],
+        radius: f32,
+    },
+    Look {
+        start: [f32; 2],
+        since: Instant,
+        moved: bool,
+        attacking: bool,
+    },
+    Menu {
+        start: [f32; 2],
+        since: Instant,
+        state: MenuState,
+    },
+    /// One of the two fingers of a scroll or Shift click.
+    Two,
+    /// Nothing until it lifts (it began under another mode, or one too many).
+    Ignored,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Finger {
+    id: u64,
+    pos: [f32; 2],
+    role: Role,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TwoFingers {
+    since: Instant,
+    mid_y: f32,
+    travel: f32,
+    /// Where the first finger landed: the Shift click's spot.
+    at: [f32; 2],
+}
+
+/// The fingers on the screen and what they have done since the game last
+/// asked.
+#[derive(Debug, Default)]
+pub struct TouchInput {
+    mode: Option<Mode>,
+    fingers: Vec<Finger>,
+    two: Option<TwoFingers>,
+    out: Vec<Output>,
+    look: [f32; 2],
+    sprinting: bool,
+    /// Releases of taps, held back until the time given.
+    late: Vec<(Control, Instant)>,
+}
+
+impl TouchInput {
+    /// Switches who the fingers drive. On a change everything held is
+    /// released and the fingers down stay ignored until they lift, so the tap
+    /// that opened a screen clicks nothing in it.
+    pub fn set_mode(&mut self, mode: Mode) {
+        if self.mode == Some(mode) {
+            return;
+        }
+        self.mode = Some(mode);
+        for finger in &mut self.fingers {
+            match finger.role {
+                Role::Button(c) => self.out.push(Output::Release(c)),
+                Role::Look {
+                    attacking: true, ..
+                } => self.out.push(Output::Release(Control::Attack)),
+                Role::Menu {
+                    state: MenuState::Dragging,
+                    ..
+                } => self
+                    .out
+                    .push(Output::PointerRelease(Button::Left, finger.pos)),
+                _ => {}
+            }
+            finger.role = Role::Ignored;
+        }
+        self.two = None;
+        if std::mem::take(&mut self.sprinting) {
+            self.out.push(Output::Release(Control::Sprint));
+        }
+        for (control, _) in self.late.drain(..) {
+            self.out.push(Output::Release(control));
+        }
+        self.look = [0.0, 0.0];
+    }
+
+    /// A touch from the window, at `pos` in GUI pixels.
+    pub fn event(&mut self, id: u64, phase: Phase, pos: [f32; 2], now: Instant, layout: &Layout) {
+        match phase {
+            Phase::Started => self.start(id, pos, now, layout),
+            Phase::Moved => self.moved(id, pos, layout),
+            Phase::Ended | Phase::Cancelled => {
+                self.end(id, pos, now, layout, phase == Phase::Cancelled);
+            }
+        }
+    }
+
+    fn start(&mut self, id: u64, pos: [f32; 2], now: Instant, layout: &Layout) {
+        // A lost end (the app went to the background) frees its id.
+        self.fingers.retain(|f| f.id != id);
+        let role = match self.mode {
+            None => Role::Ignored,
+            Some(Mode::Play) => self.play_role(pos, now, layout),
+            Some(mode @ Mode::Menu { .. }) => self.menu_role(id, pos, now, layout, mode),
+        };
+        self.fingers.push(Finger { id, pos, role });
+    }
+
+    fn play_role(&mut self, pos: [f32; 2], now: Instant, layout: &Layout) -> Role {
+        let taken = |f: &Finger, stick: bool| match f.role {
+            Role::Stick { .. } => stick,
+            Role::Look { .. } => !stick,
+            _ => false,
+        };
+        if let Some(control) = layout.button_at(pos, Mode::Play) {
+            self.out.push(Output::Press(control));
+            Role::Button(control)
+        } else if let Some(slot) = layout.hotbar_slot(pos) {
+            self.out.push(Output::Hotbar(slot));
+            Role::Hotbar
+        } else if layout.in_stick_zone(pos) {
+            if self.fingers.iter().any(|f| taken(f, true)) {
+                Role::Ignored
+            } else {
+                Role::Stick {
+                    origin: pos,
+                    radius: layout.stick_radius(),
+                }
+            }
+        } else if self.fingers.iter().any(|f| taken(f, false)) {
+            Role::Ignored
+        } else {
+            Role::Look {
+                start: pos,
+                since: now,
+                moved: false,
+                attacking: false,
+            }
+        }
+    }
+
+    fn menu_role(
+        &mut self,
+        id: u64,
+        pos: [f32; 2],
+        now: Instant,
+        layout: &Layout,
+        mode: Mode,
+    ) -> Role {
+        if let Some(control) = layout.button_at(pos, mode) {
+            self.out.push(Output::Press(control));
+            return Role::Button(control);
+        }
+        if self.two.is_some() {
+            return Role::Ignored;
+        }
+        let primary = self
+            .fingers
+            .iter_mut()
+            .find(|f| matches!(f.role, Role::Menu { .. }) && f.id != id);
+        match primary {
+            Some(first) => {
+                let Role::Menu {
+                    start,
+                    state: MenuState::Pending,
+                    ..
+                } = first.role
+                else {
+                    // A drag or a long press is already under way.
+                    return Role::Ignored;
+                };
+                first.role = Role::Two;
+                self.two = Some(TwoFingers {
+                    since: now,
+                    mid_y: (first.pos[1] + pos[1]) / 2.0,
+                    travel: 0.0,
+                    at: start,
+                });
+                Role::Two
+            }
+            None => {
+                self.out.push(Output::PointerMove(pos));
+                Role::Menu {
+                    start: pos,
+                    since: now,
+                    state: MenuState::Pending,
+                }
+            }
+        }
+    }
+
+    fn moved(&mut self, id: u64, pos: [f32; 2], layout: &Layout) {
+        let Some(i) = self.fingers.iter().position(|f| f.id == id) else {
+            return;
+        };
+        let old = self.fingers[i].pos;
+        self.fingers[i].pos = pos;
+        match &mut self.fingers[i].role {
+            Role::Stick { origin, radius } => {
+                // Past its reach the stick's centre follows the finger.
+                let d = distance(pos, *origin);
+                if d > *radius {
+                    let k = (d - *radius) / d;
+                    origin[0] += (pos[0] - origin[0]) * k;
+                    origin[1] += (pos[1] - origin[1]) * k;
+                }
+            }
+            Role::Look { start, moved, .. } => {
+                self.look[0] += pos[0] - old[0];
+                self.look[1] += pos[1] - old[1];
+                if distance(pos, *start) > layout.slop() {
+                    *moved = true;
+                }
+            }
+            Role::Menu { start, state, .. } => match state {
+                MenuState::Pending if distance(pos, *start) > layout.slop() => {
+                    self.out.push(Output::PointerPress(Button::Left, *start));
+                    self.out.push(Output::PointerMove(pos));
+                    *state = MenuState::Dragging;
+                }
+                MenuState::Dragging => self.out.push(Output::PointerMove(pos)),
+                _ => {}
+            },
+            Role::Two => {
+                let Some(two) = self.two.as_mut() else { return };
+                let ys: Vec<f32> = self
+                    .fingers
+                    .iter()
+                    .filter(|f| matches!(f.role, Role::Two))
+                    .map(|f| f.pos[1])
+                    .collect();
+                let mid = ys.iter().sum::<f32>() / ys.len() as f32;
+                let dy = mid - two.mid_y;
+                two.mid_y = mid;
+                two.travel += dy.abs() + (pos[0] - old[0]).abs();
+                if dy != 0.0 {
+                    // The content follows the fingers: dragging down scrolls up.
+                    self.out.push(Output::Scroll(dy / SCROLL_STEP));
+                }
+            }
+            Role::Button(_) | Role::Hotbar | Role::Ignored => {}
+        }
+    }
+
+    fn end(&mut self, id: u64, pos: [f32; 2], now: Instant, layout: &Layout, cancelled: bool) {
+        let Some(i) = self.fingers.iter().position(|f| f.id == id) else {
+            return;
+        };
+        let finger = self.fingers.remove(i);
+        match finger.role {
+            Role::Button(control) => self.out.push(Output::Release(control)),
+            Role::Look {
+                attacking: true, ..
+            } => self.out.push(Output::Release(Control::Attack)),
+            Role::Look {
+                moved: false,
+                since,
+                ..
+            } if !cancelled && now.duration_since(since) < TAP => {
+                self.out.push(Output::Press(Control::Use));
+                self.late.push((Control::Use, now + TAP_HOLD));
+            }
+            Role::Menu { start, state, .. } => match state {
+                MenuState::Pending if !cancelled => {
+                    self.out.push(Output::PointerPress(Button::Left, start));
+                    self.out.push(Output::PointerRelease(Button::Left, start));
+                }
+                MenuState::Dragging => self.out.push(Output::PointerRelease(Button::Left, pos)),
+                _ => {}
+            },
+            Role::Two => {
+                if let Some(two) = self.two.take()
+                    && !cancelled
+                    && two.travel <= layout.slop()
+                    && now.duration_since(two.since) < LONG_PRESS
+                {
+                    self.out.push(Output::ShiftClick(two.at));
+                }
+                for f in &mut self.fingers {
+                    if matches!(f.role, Role::Two) {
+                        f.role = Role::Ignored;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Once per frame: the timed gestures, sprinting and late releases.
+    pub fn frame(&mut self, now: Instant) {
+        for finger in &mut self.fingers {
+            match &mut finger.role {
+                Role::Look {
+                    since,
+                    moved: false,
+                    attacking,
+                    ..
+                } if !*attacking && now.duration_since(*since) >= HOLD_ATTACK => {
+                    *attacking = true;
+                    self.out.push(Output::Press(Control::Attack));
+                }
+                Role::Menu {
+                    start,
+                    since,
+                    state,
+                } if matches!(state, MenuState::Pending)
+                    && now.duration_since(*since) >= LONG_PRESS =>
+                {
+                    self.out.push(Output::PointerPress(Button::Right, *start));
+                    self.out.push(Output::PointerRelease(Button::Right, *start));
+                    *state = MenuState::Done;
+                }
+                _ => {}
+            }
+        }
+        let sprint = self
+            .stick()
+            .is_some_and(|v| gamepad::length(v) >= 0.95 && v[1] >= 0.8);
+        if sprint != self.sprinting {
+            self.sprinting = sprint;
+            self.out.push(if sprint {
+                Output::Press(Control::Sprint)
+            } else {
+                Output::Release(Control::Sprint)
+            });
+        }
+        let out = &mut self.out;
+        self.late.retain(|&(control, at)| {
+            let due = at <= now;
+            if due {
+                out.push(Output::Release(control));
+            }
+            !due
+        });
+    }
+
+    /// What happened since the last call.
+    pub fn take(&mut self) -> Vec<Output> {
+        std::mem::take(&mut self.out)
+    }
+
+    /// The view finger's travel in GUI pixels since the last call.
+    pub fn take_look(&mut self) -> [f32; 2] {
+        std::mem::take(&mut self.look)
+    }
+
+    /// The stick's tilt, `[right, up]` with length at most 1, as a pad's stick.
+    pub fn stick(&self) -> Option<[f32; 2]> {
+        self.fingers.iter().find_map(|f| match f.role {
+            Role::Stick { origin, radius } => {
+                let v = [
+                    (f.pos[0] - origin[0]) / radius,
+                    (origin[1] - f.pos[1]) / radius,
+                ];
+                let len = gamepad::length(v);
+                Some(if len > 1.0 {
+                    [v[0] / len, v[1] / len]
+                } else {
+                    v
+                })
+            }
+            _ => None,
+        })
+    }
+
+    /// The stick's centre and the finger, for drawing it.
+    pub fn stick_at(&self) -> Option<([f32; 2], [f32; 2], f32)> {
+        self.fingers.iter().find_map(|f| match f.role {
+            Role::Stick { origin, radius } => Some((origin, f.pos, radius)),
+            _ => None,
+        })
+    }
+
+    /// The move vector (`[left, forward]`), as a pad's left stick gives it.
+    pub fn movement(&self) -> Option<[f32; 2]> {
+        gamepad::move_vector(self.stick()?, MOVE_DEADZONE)
+    }
+
+    /// A finger holds this button down.
+    pub fn holding(&self, control: Control) -> bool {
+        self.fingers
+            .iter()
+            .any(|f| matches!(f.role, Role::Button(c) if c == control))
+    }
+
+    /// No finger is on the screen.
+    pub fn idle(&self) -> bool {
+        self.fingers.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PLAY: Mode = Mode::Play;
+    const MENU: Mode = Mode::Menu { back: true };
+
+    /// An iPhone in landscape (GUI scale 4) and an iPad (GUI scale 8).
+    fn phone() -> Layout {
+        Layout {
+            width: 562.0,
+            height: 287.0,
+            unit: 39.0,
+            inset: 44.0,
+            left_handed: false,
+        }
+    }
+    fn tablet() -> Layout {
+        Layout {
+            width: 342.0,
+            height: 256.0,
+            unit: 13.0,
+            inset: 0.0,
+            left_handed: false,
+        }
+    }
+
+    struct Rig {
+        input: TouchInput,
+        layout: Layout,
+        t0: Instant,
+    }
+    impl Rig {
+        fn new(mode: Mode) -> Self {
+            let mut input = TouchInput::default();
+            input.set_mode(mode);
+            Rig {
+                input,
+                layout: phone(),
+                t0: Instant::now(),
+            }
+        }
+        fn at(&self, ms: u64) -> Instant {
+            self.t0 + Duration::from_millis(ms)
+        }
+        fn touch(&mut self, id: u64, phase: Phase, pos: [f32; 2], ms: u64) {
+            let now = self.at(ms);
+            self.input.event(id, phase, pos, now, &self.layout);
+        }
+        fn frame(&mut self, ms: u64) -> Vec<Output> {
+            self.input.frame(self.at(ms));
+            self.input.take()
+        }
+    }
+
+    fn overlap(a: Rect, b: Rect) -> bool {
+        a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
+    }
+
+    #[test]
+    fn buttons_fit_the_screen_without_overlapping_each_other_or_the_hotbar() {
+        for layout in [
+            phone(),
+            tablet(),
+            Layout {
+                left_handed: true,
+                ..phone()
+            },
+        ] {
+            let hotbar = [layout.width / 2.0 - 91.0, layout.height - 22.0, 182.0, 22.0];
+            let rects: Vec<Rect> = Control::PLAY
+                .iter()
+                .map(|&c| layout.rect(c).unwrap())
+                .collect();
+            for (i, &a) in rects.iter().enumerate() {
+                assert!(a[0] >= 0.0 && a[1] >= 0.0, "{layout:?} {a:?}");
+                assert!(a[0] + a[2] <= layout.width && a[1] + a[3] <= layout.height);
+                assert!(!overlap(a, hotbar), "{layout:?}: {a:?} covers the hotbar");
+                for &b in &rects[i + 1..] {
+                    assert!(!overlap(a, b), "{layout:?}: {a:?} and {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_notch_inset_keeps_buttons_off_the_edge() {
+        let layout = phone();
+        let jump = layout.rect(Control::Jump).unwrap();
+        assert!(jump[0] + jump[2] <= layout.width - layout.inset);
+    }
+
+    #[test]
+    fn left_handed_swaps_the_stick_and_the_buttons() {
+        let right = phone();
+        let left = Layout {
+            left_handed: true,
+            ..right
+        };
+        let low_left = [60.0, 250.0];
+        let low_right = [500.0, 250.0];
+        assert!(right.in_stick_zone(low_left) && !right.in_stick_zone(low_right));
+        assert!(left.in_stick_zone(low_right) && !left.in_stick_zone(low_left));
+        assert!(right.rect(Control::Jump).unwrap()[0] > right.width / 2.0);
+        assert!(left.rect(Control::Jump).unwrap()[0] < left.width / 2.0);
+    }
+
+    #[test]
+    fn hotbar_slots_are_twenty_pixels_from_the_left_end() {
+        let layout = phone();
+        let x0 = layout.width / 2.0 - 91.0;
+        let y = layout.height - 10.0;
+        assert_eq!(layout.hotbar_slot([x0 + 1.0, y]), Some(0));
+        assert_eq!(layout.hotbar_slot([x0 + 85.0, y]), Some(4));
+        assert_eq!(layout.hotbar_slot([x0 + 181.0, y]), Some(8));
+        assert_eq!(layout.hotbar_slot([x0 - 1.0, y]), None);
+        assert_eq!(layout.hotbar_slot([x0 + 85.0, layout.height - 40.0]), None);
+    }
+
+    #[test]
+    fn a_tap_on_a_menu_is_a_left_click_where_the_finger_landed() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [100.0, 100.0], 0);
+        rig.touch(1, Phase::Moved, [101.0, 100.0], 40);
+        rig.touch(1, Phase::Ended, [101.0, 100.0], 80);
+        assert_eq!(
+            rig.frame(80),
+            [
+                Output::PointerMove([100.0, 100.0]),
+                Output::PointerPress(Button::Left, [100.0, 100.0]),
+                Output::PointerRelease(Button::Left, [100.0, 100.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_long_press_right_clicks_once() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [100.0, 100.0], 0);
+        rig.input.take();
+        assert_eq!(rig.frame(400), []);
+        assert_eq!(
+            rig.frame(460),
+            [
+                Output::PointerPress(Button::Right, [100.0, 100.0]),
+                Output::PointerRelease(Button::Right, [100.0, 100.0]),
+            ]
+        );
+        rig.touch(1, Phase::Moved, [150.0, 100.0], 500);
+        rig.touch(1, Phase::Ended, [150.0, 100.0], 600);
+        assert_eq!(rig.frame(600), []);
+    }
+
+    #[test]
+    fn a_drag_presses_where_it_began_and_releases_where_it_ends() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [100.0, 100.0], 0);
+        rig.touch(1, Phase::Moved, [130.0, 100.0], 50);
+        rig.touch(1, Phase::Moved, [160.0, 100.0], 100);
+        rig.touch(1, Phase::Ended, [160.0, 100.0], 900);
+        assert_eq!(
+            rig.frame(900),
+            [
+                Output::PointerMove([100.0, 100.0]),
+                Output::PointerPress(Button::Left, [100.0, 100.0]),
+                Output::PointerMove([130.0, 100.0]),
+                Output::PointerMove([160.0, 100.0]),
+                Output::PointerRelease(Button::Left, [160.0, 100.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_fingers_dragging_down_scroll_up_and_click_nothing() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [100.0, 100.0], 0);
+        rig.touch(2, Phase::Started, [140.0, 100.0], 20);
+        rig.input.take();
+        rig.touch(1, Phase::Moved, [100.0, 120.0], 40);
+        rig.touch(2, Phase::Moved, [140.0, 120.0], 40);
+        rig.touch(1, Phase::Ended, [100.0, 120.0], 100);
+        rig.touch(2, Phase::Ended, [140.0, 120.0], 110);
+        let out = rig.frame(900);
+        let lines: f32 = out
+            .iter()
+            .map(|o| match o {
+                Output::Scroll(l) => *l,
+                other => panic!("{other:?}"),
+            })
+            .sum();
+        assert!((lines - 20.0 / SCROLL_STEP).abs() < 1e-4, "{lines}");
+    }
+
+    #[test]
+    fn a_two_finger_tap_shift_clicks_where_the_first_finger_landed() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [100.0, 100.0], 0);
+        rig.touch(2, Phase::Started, [140.0, 100.0], 20);
+        rig.input.take();
+        rig.touch(2, Phase::Ended, [140.0, 100.0], 120);
+        rig.touch(1, Phase::Ended, [100.0, 100.0], 130);
+        assert_eq!(rig.frame(900), [Output::ShiftClick([100.0, 100.0])]);
+    }
+
+    #[test]
+    fn the_back_button_closes_menus_and_clicks_nothing_under_it() {
+        let mut rig = Rig::new(MENU);
+        let r = rig.layout.rect(Control::Back).unwrap();
+        let p = [r[0] + 1.0, r[1] + 1.0];
+        rig.touch(1, Phase::Started, p, 0);
+        rig.touch(1, Phase::Ended, p, 50);
+        assert_eq!(
+            rig.frame(50),
+            [Output::Press(Control::Back), Output::Release(Control::Back)]
+        );
+    }
+
+    #[test]
+    fn the_stick_finger_never_turns_the_view() {
+        let mut rig = Rig::new(PLAY);
+        rig.touch(1, Phase::Started, [80.0, 200.0], 0);
+        // Pushed up and far to the right, over the view's half.
+        rig.touch(1, Phase::Moved, [80.0, 150.0], 30);
+        rig.touch(1, Phase::Moved, [400.0, 150.0], 60);
+        assert_eq!(rig.input.take_look(), [0.0, 0.0]);
+        // A second finger on the right turns it.
+        rig.touch(2, Phase::Started, [450.0, 120.0], 70);
+        rig.touch(2, Phase::Moved, [460.0, 115.0], 80);
+        assert_eq!(rig.input.take_look(), [10.0, -5.0]);
+        // The stick still points where finger 1 is, from a centre it dragged along.
+        let v = rig.input.stick().unwrap();
+        assert!(
+            (gamepad::length(v) - 1.0).abs() < 1e-4 && v[0] > 0.9,
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn pushing_the_stick_up_walks_forward_and_a_nudge_does_nothing() {
+        let mut rig = Rig::new(PLAY);
+        let r = rig.layout.stick_radius();
+        rig.touch(1, Phase::Started, [80.0, 200.0], 0);
+        rig.touch(1, Phase::Moved, [80.0 + r * 0.1, 200.0], 10);
+        assert_eq!(rig.input.movement(), None);
+        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 0.6], 20);
+        let [left, forward] = rig.input.movement().unwrap();
+        assert!(
+            left.abs() < 1e-4 && forward > 0.4 && forward < 0.6,
+            "{forward}"
+        );
+        rig.touch(1, Phase::Ended, [80.0, 140.0], 30);
+        assert_eq!(rig.input.movement(), None);
+    }
+
+    #[test]
+    fn the_stick_all_the_way_forward_sprints() {
+        let mut rig = Rig::new(PLAY);
+        let r = rig.layout.stick_radius();
+        rig.touch(1, Phase::Started, [80.0, 200.0], 0);
+        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 0.5], 10);
+        assert_eq!(rig.frame(10), []);
+        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 1.5], 20);
+        assert_eq!(rig.frame(20), [Output::Press(Control::Sprint)]);
+        rig.touch(1, Phase::Ended, [80.0, 100.0], 30);
+        assert_eq!(rig.frame(30), [Output::Release(Control::Sprint)]);
+    }
+
+    #[test]
+    fn a_quick_tap_on_the_view_uses_and_releases_after_a_tick() {
+        let mut rig = Rig::new(PLAY);
+        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
+        rig.touch(1, Phase::Ended, [400.0, 100.0], 100);
+        assert_eq!(rig.frame(100), [Output::Press(Control::Use)]);
+        assert_eq!(rig.frame(130), []);
+        assert_eq!(rig.frame(170), [Output::Release(Control::Use)]);
+    }
+
+    #[test]
+    fn holding_still_on_the_view_attacks_until_lifted_even_while_aiming() {
+        let mut rig = Rig::new(PLAY);
+        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
+        assert_eq!(rig.frame(200), []);
+        assert_eq!(rig.frame(320), [Output::Press(Control::Attack)]);
+        rig.touch(1, Phase::Moved, [440.0, 100.0], 400);
+        assert_eq!(rig.input.take_look(), [40.0, 0.0]);
+        rig.touch(1, Phase::Ended, [440.0, 100.0], 900);
+        assert_eq!(rig.frame(900), [Output::Release(Control::Attack)]);
+    }
+
+    #[test]
+    fn looking_around_neither_uses_nor_attacks() {
+        let mut rig = Rig::new(PLAY);
+        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
+        rig.touch(1, Phase::Moved, [430.0, 100.0], 50);
+        assert_eq!(rig.frame(600), []);
+        rig.touch(1, Phase::Ended, [430.0, 100.0], 700);
+        assert_eq!(rig.frame(700), []);
+    }
+
+    #[test]
+    fn buttons_hold_while_pressed_and_the_hotbar_selects_its_slot() {
+        let mut rig = Rig::new(PLAY);
+        let r = rig.layout.rect(Control::Jump).unwrap();
+        let jump = [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
+        rig.touch(1, Phase::Started, jump, 0);
+        assert!(rig.input.holding(Control::Jump));
+        rig.touch(1, Phase::Moved, [jump[0] - 60.0, jump[1]], 20);
+        assert!(rig.input.holding(Control::Jump));
+        rig.touch(1, Phase::Ended, jump, 40);
+        let x0 = rig.layout.width / 2.0 - 91.0;
+        rig.touch(2, Phase::Started, [x0 + 65.0, rig.layout.height - 5.0], 50);
+        assert_eq!(
+            rig.frame(60),
+            [
+                Output::Press(Control::Jump),
+                Output::Release(Control::Jump),
+                Output::Hotbar(3),
+            ]
+        );
+        assert_eq!(rig.input.take_look(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_screen_opening_releases_what_is_held_and_ignores_the_fingers_down() {
+        let mut rig = Rig::new(PLAY);
+        let r = rig.layout.rect(Control::Jump).unwrap();
+        rig.touch(1, Phase::Started, [r[0] + 1.0, r[1] + 1.0], 0);
+        rig.input.take();
+        rig.input.set_mode(MENU);
+        assert_eq!(rig.input.take(), [Output::Release(Control::Jump)]);
+        rig.touch(1, Phase::Moved, [200.0, 100.0], 30);
+        rig.touch(1, Phase::Ended, [200.0, 100.0], 60);
+        assert_eq!(rig.frame(900), []);
+    }
+}
