@@ -3,7 +3,9 @@
 //! as a pad's left stick does, the view finger turns it as mouse motion,
 //! and the buttons act as the vanilla key mappings they stand for. Over
 //! menus the fingers make the mouse's window events. On by default on iOS
-//! only; `HORIZON_TOUCH=1` turns it on elsewhere (a touchscreen).
+//! only; `HORIZON_TOUCH=1` turns it on elsewhere (a touchscreen). The Touch
+//! Controls page sets their size, opacity, look speed and side
+//! (`TouchSettings`, in `settings.controller.touch`).
 use super::event_loop::EventLoopCtl;
 use super::input_trace::InputOrigin;
 use super::{Game, Screen};
@@ -14,7 +16,9 @@ use horizon_client::{
     keybinds::{KeyBinds, key_code, mouse_button},
     keymapping::SNEAK,
 };
-use horizon_client_input::touch::{Button, Control, Layout, Mode, Output, Phase, Rect, TouchInput};
+use horizon_client_input::touch::{
+    Button, Control, Layout, Mode, Output, Phase, Rect, TouchInput, available as enabled,
+};
 use std::time::Instant;
 use winit::{
     dpi::PhysicalPosition,
@@ -48,10 +52,6 @@ pub(super) struct Touches {
     input: TouchInput,
 }
 
-fn enabled() -> bool {
-    cfg!(target_os = "ios") || std::env::var_os("HORIZON_TOUCH").is_some()
-}
-
 impl Game<'_> {
     /// Where the controls sit, and the GUI scale (window pixels per GUI pixel).
     fn touch_layout(&self) -> Option<(Layout, f32)> {
@@ -60,16 +60,18 @@ impl Game<'_> {
         let per_point = points / batch.scale;
         // Phones with a notch are wider than 16:9; tablets and older phones have no notch.
         let notched = batch.width / batch.height > 1.9;
+        let settings = &self.settings.controller.touch;
         let layout = Layout {
             width: batch.width,
             height: batch.height,
-            unit: BUTTON_POINTS * per_point,
+            unit: BUTTON_POINTS * per_point * settings.scale(),
             inset: if notched {
                 NOTCH_POINTS * per_point
             } else {
                 0.0
             },
-            left_handed: false,
+            left_handed: settings.left_handed,
+            minimal: !settings.enabled,
         };
         Some((layout, batch.scale))
     }
@@ -103,7 +105,17 @@ impl Game<'_> {
             touch.location.y as f32 / scale,
         ];
         self.last_input = Instant::now();
-        self.touch.input.set_mode(self.touch_mode());
+        let mode = self.touch_mode();
+        // A finger on a screen with a focused text box brings back the
+        // keyboard the player hid (iOS hides it without telling the game).
+        if phase == Phase::Started
+            && mode != Mode::Play
+            && self.ime_allowed
+            && let Some(window) = &self.window
+        {
+            window.set_ime_allowed(true);
+        }
+        self.touch.input.set_mode(mode);
         self.touch
             .input
             .event(touch.id, phase, pos, Instant::now(), &layout);
@@ -171,7 +183,9 @@ impl Game<'_> {
         if [dx, dy] != [0.0, 0.0] {
             // GUI pixels to points, then to mouse counts.
             let points = self.window.as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
-            let k = scale / points * LOOK_COUNTS_PER_POINT;
+            let k = scale / points
+                * LOOK_COUNTS_PER_POINT
+                * self.settings.controller.touch.look_scale();
             self.mouse.add_motion(f64::from(dx * k), f64::from(dy * k));
         }
         for out in self.touch.input.take() {
@@ -326,29 +340,34 @@ impl Game<'_> {
             return;
         };
         let atlas = &self.gui.atlas;
+        // The alphas below are the default opacity's (0.5).
+        let fade = 2.0 * self.settings.controller.touch.opacity;
         match self.touch_mode() {
             Mode::Play => {
                 for control in Control::PLAY {
+                    if layout.minimal && control != Control::Pause {
+                        continue;
+                    }
                     let held = self.touch.input.holding(control)
                         || (control == Control::Sneak && self.toggles.is_down(SNEAK));
                     if let Some(r) = layout.rect(control) {
-                        draw_button(batch, atlas, r, control, held);
+                        draw_button(batch, atlas, r, control, held, fade);
                     }
                 }
                 if let Some((origin, finger, radius)) = self.touch.input.stick_at() {
-                    disc(batch, atlas, origin, radius, rgba(0, 0, 0, 70));
+                    disc(batch, atlas, origin, radius, faded(0, 70, fade));
                     let d = (finger[0] - origin[0]).hypot(finger[1] - origin[1]);
                     let k = if d > radius { radius / d } else { 1.0 };
                     let knob = [
                         origin[0] + (finger[0] - origin[0]) * k,
                         origin[1] + (finger[1] - origin[1]) * k,
                     ];
-                    disc(batch, atlas, knob, radius * 0.45, rgba(255, 255, 255, 110));
+                    disc(batch, atlas, knob, radius * 0.45, faded(255, 110, fade));
                 }
             }
             Mode::Menu { back: true } => {
                 if let Some(r) = layout.rect(Control::Back) {
-                    draw_button(batch, atlas, r, Control::Back, false);
+                    draw_button(batch, atlas, r, Control::Back, false, fade);
                 }
             }
             Mode::Menu { back: false } => {}
@@ -361,6 +380,11 @@ fn touch_button(button: Button) -> MouseButton {
         Button::Left => MouseButton::Left,
         Button::Right => MouseButton::Right,
     }
+}
+
+/// Grey `v` at `alpha` scaled by `fade`.
+fn faded(v: u8, alpha: u8, fade: f32) -> u32 {
+    rgba(v, v, v, (f32::from(alpha) * fade).round().min(255.0) as u8)
 }
 
 /// A filled circle (a 20-gon).
@@ -395,21 +419,24 @@ fn line(batch: &mut HudBatch, atlas: &HudAtlas, a: [f32; 2], b: [f32; 2], width:
 
 /// A button: a dark square with a light glyph, brighter while held. The
 /// glyphs are shapes, so nothing needs translating.
-fn draw_button(batch: &mut HudBatch, atlas: &HudAtlas, r: Rect, control: Control, held: bool) {
+fn draw_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    r: Rect,
+    control: Control,
+    held: bool,
+    fade: f32,
+) {
     let [x, y, w, h] = r;
-    let back = if held {
-        rgba(255, 255, 255, 90)
-    } else {
-        rgba(0, 0, 0, 90)
-    };
+    let back = faded(if held { 255 } else { 0 }, 90, fade);
     batch.fill(atlas, x, y, w, h, back);
-    let edge = rgba(255, 255, 255, 60);
+    let edge = faded(255, 60, fade);
     let t = (w / 24.0).max(0.5);
     batch.fill(atlas, x, y, w, t, edge);
     batch.fill(atlas, x, y + h - t, w, t, edge);
     batch.fill(atlas, x, y + t, t, h - 2.0 * t, edge);
     batch.fill(atlas, x + w - t, y + t, t, h - 2.0 * t, edge);
-    let ink = rgba(255, 255, 255, 210);
+    let ink = faded(255, 210, fade);
     let (cx, cy, s) = (x + w / 2.0, y + h / 2.0, w);
     let p = |u: f32, v: f32| [cx + u * s, cy + v * s];
     let stroke = s * 0.09;
@@ -462,6 +489,20 @@ fn draw_button(batch: &mut HudBatch, atlas: &HudAtlas, r: Rect, control: Control
                 ink,
             );
             line(batch, atlas, p(-0.12, 0.0), p(0.08, 0.2), stroke * 1.3, ink);
+        }
+        Control::Chat => {
+            // A speech bubble: an outlined box with a tail at the lower left.
+            let (l, r, t, b) = (cx - s * 0.24, cx + s * 0.24, cy - 0.18 * s, cy + 0.1 * s);
+            let k = stroke * 0.8;
+            batch.fill(atlas, l, t, r - l, k, ink);
+            batch.fill(atlas, l, b - k, r - l, k, ink);
+            batch.fill(atlas, l, t, k, b - t, ink);
+            batch.fill(atlas, r - k, t, k, b - t, ink);
+            batch.fill_quad(
+                atlas,
+                [p(-0.14, 0.1), p(-0.02, 0.1), p(-0.16, 0.24), p(-0.14, 0.1)],
+                ink,
+            );
         }
         Control::Sprint => {}
     }

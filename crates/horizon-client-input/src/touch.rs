@@ -9,7 +9,11 @@
 //! a long press a right click, a drag a left drag, two fingers dragging
 //! scroll and a two-finger tap is a Shift click.
 use crate::gamepad;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// Held still this long, a finger right clicks in menus.
 pub const LONG_PRESS: Duration = Duration::from_millis(450);
@@ -52,12 +56,15 @@ pub enum Control {
     Pause,
     /// Closes the open screen (Escape).
     Back,
+    /// Opens the chat (and with it the keyboard).
+    Chat,
 }
 
 impl Control {
     /// The buttons drawn while playing.
-    pub const PLAY: [Control; 7] = [
+    pub const PLAY: [Control; 8] = [
         Control::Pause,
+        Control::Chat,
         Control::Jump,
         Control::Sneak,
         Control::Attack,
@@ -77,6 +84,7 @@ impl Control {
             Control::Inventory => "key.inventory",
             Control::Drop => "key.drop",
             Control::Sprint => "key.sprint",
+            Control::Chat => "key.chat",
             Control::Pause | Control::Back => return None,
         })
     }
@@ -136,6 +144,9 @@ pub struct Layout {
     pub inset: f32,
     /// Mirrored: the stick on the right, the buttons on the left.
     pub left_handed: bool,
+    /// The on-screen controls are off: only the pause button is left, so a
+    /// phone with no keyboard can still reach the settings.
+    pub minimal: bool,
 }
 
 impl Layout {
@@ -169,8 +180,11 @@ impl Layout {
         let corner = u * 0.7;
         let hotbar = w / 2.0 - HOTBAR_WIDTH / 2.0;
         let r = match control {
-            // Top left: toasts and effect icons take the top right.
-            Control::Pause | Control::Back => [self.inset + m, m * 0.5, corner, corner],
+            // Top left on either hand: toasts and effect icons take the top right.
+            Control::Pause | Control::Back => {
+                return Some([self.inset + m, m * 0.5, corner, corner]);
+            }
+            Control::Chat => return Some([self.inset + 2.0 * m + corner, m * 0.5, corner, corner]),
             Control::Jump => [right - u, h - m - u, u, u],
             Control::Sneak => [right - 2.0 * u - m, h - m - u, u, u],
             Control::Attack => [right - u, h - 2.0 * (m + u), u, u],
@@ -197,6 +211,7 @@ impl Layout {
         match mode {
             Mode::Play => Control::PLAY
                 .into_iter()
+                .filter(|&c| !self.minimal || c == Control::Pause)
                 .find(|&c| self.rect(c).is_some_and(|r| contains(r, p))),
             Mode::Menu { back: true } => {
                 (self.rect(Control::Back).is_some_and(|r| contains(r, p))).then_some(Control::Back)
@@ -216,6 +231,175 @@ impl Layout {
     /// The part of the screen where a finger becomes the stick.
     pub fn in_stick_zone(&self, p: [f32; 2]) -> bool {
         self.mirror_x(p[0]) < self.width * 0.4
+    }
+}
+
+/// The touch settings (`horizon-touch.txt`, Horizon's own).
+pub const FILE: &str = "horizon-touch.txt";
+
+/// Whether this window takes touches as the touch controls: always on iOS,
+/// elsewhere with `HORIZON_TOUCH` set (a touchscreen, or testing).
+pub fn available() -> bool {
+    cfg!(target_os = "ios") || std::env::var_os("HORIZON_TOUCH").is_some()
+}
+
+/// How the touch controls look and feel (the Touch Controls page).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TouchSettings {
+    /// The on-screen controls while playing; off leaves the pause button
+    /// (for a keyboard or a controller). Menus take taps either way.
+    pub enabled: bool,
+    /// 0..1; 0.5 is the default size, 0 a little over half, 1 half again bigger.
+    pub size: f32,
+    /// 0..1: how solid the buttons are drawn.
+    pub opacity: f32,
+    /// 0..1; 0.5 is the default speed, 1 twice that.
+    pub look_sensitivity: f32,
+    pub left_handed: bool,
+}
+
+impl Default for TouchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            size: 0.5,
+            opacity: 0.5,
+            look_sensitivity: 0.5,
+            left_handed: false,
+        }
+    }
+}
+
+impl TouchSettings {
+    pub fn load(dir: &Path) -> Self {
+        fs::read_to_string(dir.join(FILE))
+            .map(|t| Self::parse(&t))
+            .unwrap_or_default()
+    }
+    /// Written once something differs from the defaults, so a desktop that
+    /// never sees a touch gets no new file.
+    pub fn save(&self, dir: &Path) {
+        let path = dir.join(FILE);
+        if *self != Self::default() || path.exists() {
+            let _ = fs::write(path, self.serialize());
+        }
+    }
+    pub fn parse(text: &str) -> Self {
+        let mut s = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            let flag = |d: bool| match value {
+                "true" => true,
+                "false" => false,
+                _ => d,
+            };
+            let unit = |d: f32| {
+                value
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map_or(d, |v| v.clamp(0.0, 1.0))
+            };
+            match key.trim() {
+                "enabled" => s.enabled = flag(s.enabled),
+                "size" => s.size = unit(s.size),
+                "opacity" => s.opacity = unit(s.opacity),
+                "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
+                "leftHanded" => s.left_handed = flag(s.left_handed),
+                _ => {}
+            }
+        }
+        s
+    }
+    pub fn serialize(&self) -> String {
+        format!(
+            "enabled:{}\nsize:{}\nopacity:{}\nlookSensitivity:{}\nleftHanded:{}\n",
+            self.enabled, self.size, self.opacity, self.look_sensitivity, self.left_handed,
+        )
+    }
+    /// The buttons' size as a multiple of the default.
+    pub fn scale(&self) -> f32 {
+        0.6 + 0.8 * self.size
+    }
+    /// The view's turning speed as a multiple of the default.
+    pub fn look_scale(&self) -> f32 {
+        2.0 * self.look_sensitivity
+    }
+}
+
+/// One touch setting, as the options screen shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchOpt {
+    Enabled,
+    Size,
+    Opacity,
+    LookSensitivity,
+    LeftHanded,
+}
+
+impl TouchOpt {
+    pub const ALL: [TouchOpt; 5] = [
+        TouchOpt::Enabled,
+        TouchOpt::LeftHanded,
+        TouchOpt::Size,
+        TouchOpt::Opacity,
+        TouchOpt::LookSensitivity,
+    ];
+    /// Its caption's translation key (Horizon's lang, `assets/horizon/lang`).
+    pub fn caption(self) -> &'static str {
+        match self {
+            TouchOpt::Enabled => "horizon.options.touch.controls",
+            TouchOpt::Size => "horizon.options.touch.size",
+            TouchOpt::Opacity => "horizon.options.touch.opacity",
+            TouchOpt::LookSensitivity => "horizon.options.touch.look_sensitivity",
+            TouchOpt::LeftHanded => "horizon.options.touch.left_handed",
+        }
+    }
+    /// A slider's position, `None` for an on/off button.
+    pub fn slider(self, s: &TouchSettings) -> Option<f32> {
+        match self {
+            TouchOpt::Size => Some(s.size),
+            TouchOpt::Opacity => Some(s.opacity),
+            TouchOpt::LookSensitivity => Some(s.look_sensitivity),
+            TouchOpt::Enabled | TouchOpt::LeftHanded => None,
+        }
+    }
+    /// The percentage a slider shows: of the default size and speed, or how
+    /// solid the buttons are.
+    pub fn percent(self, s: &TouchSettings) -> Option<f32> {
+        match self {
+            TouchOpt::Size => Some(s.scale()),
+            TouchOpt::Opacity => Some(s.opacity),
+            TouchOpt::LookSensitivity => Some(s.look_scale()),
+            TouchOpt::Enabled | TouchOpt::LeftHanded => None,
+        }
+    }
+    pub fn set_slider(self, s: &mut TouchSettings, v: f32) {
+        let v = v.clamp(0.0, 1.0);
+        match self {
+            TouchOpt::Size => s.size = v,
+            TouchOpt::Opacity => s.opacity = v,
+            TouchOpt::LookSensitivity => s.look_sensitivity = v,
+            TouchOpt::Enabled | TouchOpt::LeftHanded => {}
+        }
+    }
+    /// An on/off button's value.
+    pub fn on(self, s: &TouchSettings) -> Option<bool> {
+        match self {
+            TouchOpt::Enabled => Some(s.enabled),
+            TouchOpt::LeftHanded => Some(s.left_handed),
+            _ => None,
+        }
+    }
+    pub fn toggle(self, s: &mut TouchSettings) {
+        match self {
+            TouchOpt::Enabled => s.enabled = !s.enabled,
+            TouchOpt::LeftHanded => s.left_handed = !s.left_handed,
+            _ => {}
+        }
     }
 }
 
@@ -349,6 +533,8 @@ impl TouchInput {
         if let Some(control) = layout.button_at(pos, Mode::Play) {
             self.out.push(Output::Press(control));
             Role::Button(control)
+        } else if layout.minimal {
+            Role::Ignored
         } else if let Some(slot) = layout.hotbar_slot(pos) {
             self.out.push(Output::Hotbar(slot));
             Role::Hotbar
@@ -638,6 +824,7 @@ mod tests {
             unit: 39.0,
             inset: 44.0,
             left_handed: false,
+            minimal: false,
         }
     }
     fn tablet() -> Layout {
@@ -647,6 +834,7 @@ mod tests {
             unit: 13.0,
             inset: 0.0,
             left_handed: false,
+            minimal: false,
         }
     }
 
@@ -728,6 +916,8 @@ mod tests {
         assert!(left.in_stick_zone(low_right) && !left.in_stick_zone(low_left));
         assert!(right.rect(Control::Jump).unwrap()[0] > right.width / 2.0);
         assert!(left.rect(Control::Jump).unwrap()[0] < left.width / 2.0);
+        // The pause button stays clear of the toasts at the top right.
+        assert!(left.rect(Control::Pause).unwrap()[0] < left.width / 2.0);
     }
 
     #[test]
@@ -956,5 +1146,42 @@ mod tests {
         rig.touch(1, Phase::Moved, [200.0, 100.0], 30);
         rig.touch(1, Phase::Ended, [200.0, 100.0], 60);
         assert_eq!(rig.frame(900), []);
+    }
+
+    #[test]
+    fn touch_settings_round_trip_and_reject_what_is_out_of_range() {
+        let s = TouchSettings {
+            enabled: false,
+            size: 0.25,
+            opacity: 0.8,
+            look_sensitivity: 1.0,
+            left_handed: true,
+        };
+        assert_eq!(TouchSettings::parse(&s.serialize()), s);
+        let odd = TouchSettings::parse("size:7\nopacity:nan\nleftHanded:maybe\nfuture:1\n");
+        assert_eq!(odd.size, 1.0);
+        assert_eq!(odd.opacity, TouchSettings::default().opacity);
+        assert!(!odd.left_handed);
+        // The defaults are the sizes and speed the controls were tuned at.
+        assert_eq!(TouchSettings::default().scale(), 1.0);
+        assert_eq!(TouchSettings::default().look_scale(), 1.0);
+    }
+
+    #[test]
+    fn with_the_controls_off_only_the_pause_button_answers() {
+        let mut rig = Rig::new(PLAY);
+        rig.layout.minimal = true;
+        let pause = rig.layout.rect(Control::Pause).unwrap();
+        let jump = rig.layout.rect(Control::Jump).unwrap();
+        rig.touch(1, Phase::Started, [jump[0] + 1.0, jump[1] + 1.0], 0);
+        rig.touch(2, Phase::Started, [100.0, 200.0], 0);
+        rig.touch(2, Phase::Moved, [130.0, 150.0], 10);
+        rig.touch(3, Phase::Started, [400.0, 100.0], 0);
+        rig.touch(3, Phase::Moved, [420.0, 100.0], 10);
+        assert_eq!(rig.frame(500), []);
+        assert_eq!(rig.input.take_look(), [0.0, 0.0]);
+        assert_eq!(rig.input.movement(), None);
+        rig.touch(4, Phase::Started, [pause[0] + 1.0, pause[1] + 1.0], 600);
+        assert_eq!(rig.frame(610), [Output::Press(Control::Pause)]);
     }
 }

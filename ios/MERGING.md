@@ -18,12 +18,20 @@ git fetch upstream && git checkout ios && git merge upstream/main
   `WindowEvent::Touch` dispatch, `touch_frame` before `poll_pads`, `draw_touch` at the end of the
   HUD, the stick at the top of `pad_move`, the `touch` control command) and the pointer grab that is
   the game's own on iOS (`capture`).
-- **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures, unit-tested) and
-  `crates/horizon-client/src/game/touch.rs` (the game side). Upstream never touches them.
-  `gamepad::length` was made `pub` for them.
+- **The Touch Controls page** (`// ios-port:` too): `Opt::Touch` in `settings.rs`, one arm per
+  `Opt` method in `options_ui.rs` (caption, kind, label, value, slider, cycle), `Page::Touch` (its
+  title, tooltip and rows, and the buttons that open it on the Controls and Horizon Settings pages),
+  `options touch` in `game/control.rs`, and the `touch` field of `PadSettings` in `gamepad.rs`
+  (loaded and saved beside the controller's file, as `horizon-touch.txt`). Its strings are a block
+  of `horizon.pages.touch*` / `horizon.options.touch.*` keys in `assets/horizon/lang/en_us.json`.
+- **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures and
+  `TouchSettings`, unit-tested) and `crates/horizon-client/src/game/touch.rs` (the game side).
+  Upstream never touches them. `gamepad::length` was made `pub` for them.
 
 Test the touch controls on the desktop: launch with `HORIZON_TOUCH=1`, then
-`horizon-ctl touch start|move|end ID X Y` (GUI pixels) plays fingers.
+`horizon-ctl touch start|move|end ID X Y` (GUI pixels) plays fingers and `horizon-ctl options touch`
+opens the settings. Run the game from a scratch working directory: it writes `options.txt` and
+`horizon-touch.txt` there.
 
 ## After a merge
 
@@ -37,8 +45,12 @@ Test the touch controls on the desktop: launch with `HORIZON_TOUCH=1`, then
 
 ## The patched winit (`ios/third_party/winit`)
 
-winit 0.30.13 with two iOS changes, each marked `horizon-ios:` (`git grep -n "horizon-ios:" ios/third_party`):
+winit 0.30.13 with these iOS changes, each marked `horizon-ios:` (`git grep -n "horizon-ios:" ios/third_party`):
 the UIScene life cycle UIKit requires of apps built with current SDKs (windows join the app's
-`UIWindowScene`), and windows that always fill the screen. It applies only to the ios/ workspace.
+`UIWindowScene`), windows that always fill the screen, and typing with the on-screen keyboard:
+Return is the Enter key, no autocapitals, corrections or smart quotes (they would break commands),
+and the view shrinks to end where the keyboard begins, so the text box stays in sight. winit
+itself shows the keyboard while the game allows an input method (`set_ime_allowed`, which the game
+turns on while a text box has focus). It applies only to the ios/ workspace.
 When upstream moves to another winit, port these changes to that version (or drop them once winit
 has them) and update the path in `ios/Cargo.toml`.

@@ -11,6 +11,12 @@ use objc2_ui_kit::{
     UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
     UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitEnvironment, UIView,
 };
+// horizon-ios: the keyboard's traits and frame.
+use objc2_ui_kit::{
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UITextAutocapitalizationType, UITextAutocorrectionType, UITextSmartDashesType,
+    UITextSmartInsertDeleteType, UITextSmartQuotesType, UITextSpellCheckingType,
+};
 
 use super::app_state::{self, EventWrapper};
 use super::window::WinitUIWindow;
@@ -31,6 +37,9 @@ pub struct WinitViewState {
     rotation_last_delta: Cell<CGFloat>,
     pinch_last_delta: Cell<CGFloat>,
     pan_last_delta: Cell<CGPoint>,
+
+    // horizon-ios: how much of the window's bottom the on-screen keyboard covers, in points.
+    keyboard_overlap: Cell<CGFloat>,
 }
 
 declare_class!(
@@ -68,7 +77,11 @@ declare_class!(
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
 
             let window = self.window().unwrap();
-            let window_bounds = window.bounds();
+            let mut window_bounds = window.bounds();
+            // horizon-ios: the view (and so the game) ends where the keyboard begins, so the text
+            // box being typed in stays in sight.
+            window_bounds.size.height =
+                (window_bounds.size.height - self.ivars().keyboard_overlap.get()).max(1.0);
             let screen = window.screen();
             let screen_space = screen.coordinateSpace();
             let screen_frame = self.convertRect_toCoordinateSpace(window_bounds, &screen_space);
@@ -332,7 +345,38 @@ declare_class!(
         }
     }
 
+    // horizon-ios: typed text goes to commands and names as typed: no capitals, corrections or
+    // curly quotes the player didn't type.
     unsafe impl UITextInputTraits for WinitView {
+        #[method(autocapitalizationType)]
+        fn autocapitalization_type(&self) -> UITextAutocapitalizationType {
+            UITextAutocapitalizationType::None
+        }
+
+        #[method(autocorrectionType)]
+        fn autocorrection_type(&self) -> UITextAutocorrectionType {
+            UITextAutocorrectionType::No
+        }
+
+        #[method(spellCheckingType)]
+        fn spell_checking_type(&self) -> UITextSpellCheckingType {
+            UITextSpellCheckingType::No
+        }
+
+        #[method(smartQuotesType)]
+        fn smart_quotes_type(&self) -> UITextSmartQuotesType {
+            UITextSmartQuotesType::No
+        }
+
+        #[method(smartDashesType)]
+        fn smart_dashes_type(&self) -> UITextSmartDashesType {
+            UITextSmartDashesType::No
+        }
+
+        #[method(smartInsertDeleteType)]
+        fn smart_insert_delete_type(&self) -> UITextSmartInsertDeleteType {
+            UITextSmartInsertDeleteType::No
+        }
     }
 
     unsafe impl UIKeyInput for WinitView {
@@ -368,16 +412,57 @@ impl WinitView {
             rotation_last_delta: Cell::new(0.0),
             pinch_last_delta: Cell::new(0.0),
             pan_last_delta: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
+            keyboard_overlap: Cell::new(0.0),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
         this.setMultipleTouchEnabled(true);
+
+        // horizon-ios: follow the on-screen keyboard (the observer lives as long as the app).
+        let weak = objc2::rc::Weak::from_retained(&this);
+        let observer = super::notification_center::create_observer(
+            &*unsafe { objc2_foundation::NSNotificationCenter::defaultCenter() },
+            unsafe { UIKeyboardWillChangeFrameNotification },
+            move |notification| {
+                if let Some(view) = weak.load() {
+                    view.keyboard_will_change_frame(notification);
+                }
+            },
+        );
+        std::mem::forget(observer);
 
         if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
             this.setContentScaleFactor(scale_factor as _);
         }
 
         this
+    }
+
+    // horizon-ios: the keyboard moves (shows, hides, changes size): lay the view out above it.
+    fn keyboard_will_change_frame(&self, notification: &objc2_foundation::NSNotification) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        let info: Option<Retained<NSObject>> = unsafe { msg_send_id![notification, userInfo] };
+        let Some(info) = info else {
+            return;
+        };
+        let value: Option<Retained<NSObject>> =
+            unsafe { msg_send_id![&info, objectForKey: UIKeyboardFrameEndUserInfoKey] };
+        let Some(value) = value else {
+            return;
+        };
+        // In the screen's coordinates, which the window fills.
+        let keyboard: CGRect = unsafe { msg_send![&value, CGRectValue] };
+        let height = window.bounds().size.height;
+        let overlap = if keyboard.size.height > 0.0 && keyboard.size.width > 0.0 {
+            (height - keyboard.origin.y).clamp(0.0, height)
+        } else {
+            0.0
+        };
+        if overlap != self.ivars().keyboard_overlap.replace(overlap) {
+            unsafe { self.setNeedsLayout() };
+        }
     }
 
     fn window(&self) -> Option<Retained<WinitUIWindow>> {
@@ -548,6 +633,28 @@ impl WinitView {
         app_state::handle_nonuser_events(
             mtm,
             text.to_string().chars().flat_map(|c| {
+                // horizon-ios: the keyboard's Return is the Enter key (it sends a line break).
+                if c == '\n' || c == '\r' {
+                    return [ElementState::Pressed, ElementState::Released].map(|state| {
+                        EventWrapper::StaticEvent(Event::WindowEvent {
+                            window_id,
+                            event: WindowEvent::KeyboardInput {
+                                event: KeyEvent {
+                                    text: (state == ElementState::Pressed)
+                                        .then(|| smol_str::SmolStr::new("\r")),
+                                    state,
+                                    location: KeyLocation::Standard,
+                                    repeat: false,
+                                    logical_key: Key::Named(NamedKey::Enter),
+                                    physical_key: PhysicalKey::Code(KeyCode::Enter),
+                                    platform_specific: KeyEventExtra {},
+                                },
+                                is_synthetic: false,
+                                device_id: DEVICE_ID,
+                            },
+                        })
+                    });
+                }
                 let text = smol_str::SmolStr::from_iter([c]);
                 // Emit both press and release events
                 [ElementState::Pressed, ElementState::Released].map(|state| {

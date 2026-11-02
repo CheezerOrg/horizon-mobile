@@ -88,6 +88,7 @@ pub(super) fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Mods => "horizon.pages.mods.tooltip",
         Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         Page::Music => "horizon.pages.music.tooltip",
+        Page::Touch => "horizon.pages.touch.tooltip", // ios-port:
         _ => return None,
     })
 }
@@ -133,6 +134,10 @@ impl OptionsUi {
                 )
             },
         ];
+        // ios-port:
+        if horizon_client_input::touch::available() {
+            rows.push(Row::Buttons(open("horizon.pages.open.touch", Page::Touch), None));
+        }
         self.added_entries(&mut rows);
         rows
     }

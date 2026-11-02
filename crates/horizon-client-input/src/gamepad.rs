@@ -690,6 +690,8 @@ pub struct PadSettings {
     /// The opener last used with each stick (`RadialStick::ALL` order), so stepping the Selects
     /// With row and back gives each stick's own opener again.
     openers: radial_file::StickOpeners,
+    /// The touch controls' settings, in their own file. ios-port:
+    pub touch: crate::touch::TouchSettings,
 }
 impl Default for PadSettings {
     fn default() -> Self {
@@ -722,6 +724,7 @@ impl Default for PadSettings {
             extra: Vec::new(),
             bind_layout: BIND_LAYOUT,
             openers: radial_file::StickOpeners::default(),
+            touch: Default::default(), // ios-port:
         }
     }
 }
@@ -734,15 +737,24 @@ impl PadSettings {
         self.nintendo_letters && family == GlyphStyle::Nintendo
     }
     pub fn load(dir: &Path) -> Self {
-        fs::read_to_string(dir.join(FILE))
-            .map(|t| Self::parse(&t))
-            .unwrap_or_default()
+        let touch = crate::touch::TouchSettings::load(dir); // ios-port:
+        Self {
+            touch,
+            ..fs::read_to_string(dir.join(FILE))
+                .map(|t| Self::parse(&t))
+                .unwrap_or_default()
+        }
     }
     /// Written once something differs from the defaults, so players who
     /// never touch a controller get no new file.
     pub fn save(&self, dir: &Path) {
+        self.touch.save(dir); // ios-port:
         let path = dir.join(FILE);
-        if *self != Self::default() || path.exists() {
+        let pad = Self {
+            touch: Default::default(), // ios-port: the touch settings have their own file
+            ..self.clone()
+        };
+        if pad != Self::default() || path.exists() {
             let _ = fs::write(path, self.serialize());
         }
     }
