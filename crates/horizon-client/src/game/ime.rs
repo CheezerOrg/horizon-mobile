@@ -113,6 +113,14 @@ impl Game<'_> {
         if self.prompt_open() && !self.dialog_open() {
             return;
         }
+        self.char_typed(text);
+    }
+
+    /// Characters that come with no key (`KeyboardHandler.charTyped`): an
+    /// input method's commit, the iOS on-screen keyboard's letters, Windows'
+    /// Alt codes. They go to the focused box of a dialog, a title screen
+    /// (world name, server address...) or the open game screen.
+    pub(super) fn char_typed(&mut self, text: &str) {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if let Some(result) = self.type_text_field_input(&text) {
             if let Err(error) = result {
