@@ -22,6 +22,13 @@ ios/run.sh            # the booted simulator
 ios/run.sh device     # the connected iPhone or iPad
 ```
 
+An `.ipa` (Release) in `ios/build/Horizon.ipa`, for your own devices only:
+
+```sh
+ios/ipa.sh            # unsigned, for a sideloading tool that signs it (AltStore, Sideloadly...)
+ios/ipa.sh signed     # archived and exported, signed with Local.xcconfig's team
+```
+
 Or `cd ios && xcodegen` and open `Horizon.xcodeproj` in Xcode (▶ builds the Rust library too).
 Debug builds use Cargo's `fast` profile; Archive uses `release`.
 

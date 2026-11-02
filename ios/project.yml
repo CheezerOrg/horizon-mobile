@@ -31,7 +31,10 @@ targets:
         INFOPLIST_FILE: app/Info.plist
         # build.sh copies the Rust library here for the platform being built.
         LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/target/xcode/$(PLATFORM_NAME)
-        OTHER_LDFLAGS: -lhorizon_ios -lc++ -liconv
+        # iOS gives the main thread 1 MB of stack (macOS 8 MB); the game's loading path
+        # (Loading::finish → build_renderer → Renderer::new) needs more than that.
+        OTHER_LDFLAGS: -lhorizon_ios -lc++ -liconv -Wl,-stack_size,0x400000
+        ENABLE_DEBUG_DYLIB: NO
     dependencies:
       - sdk: Metal.framework
       - sdk: QuartzCore.framework
