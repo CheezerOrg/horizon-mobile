@@ -128,7 +128,8 @@ impl Game<'_> {
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
             let pad = self.input_holds(mapping);
-            if !held && !pad {
+            // ios-port: touch descend and sprint hold their keys without a Shift or Ctrl.
+            if !held && !pad && !self.touch_holds_latch(slot) {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }

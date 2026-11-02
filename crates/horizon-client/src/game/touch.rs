@@ -5,19 +5,22 @@
 //! menus the fingers make the mouse's window events. On by default on iOS
 //! only; `HORIZON_TOUCH=1` turns it on elsewhere (a touchscreen). The Touch
 //! Controls page sets their size, opacity, look speed and side
-//! (`TouchSettings`, in `settings.controller.touch`).
+//! (`TouchSettings`, in `settings.controller.touch`). They are drawn with
+//! Bedrock Edition's own textures when the resources have them
+//! (`textures/gui/bedrock`, which `ios/bedrock_controls.sh` downloads: Mojang's
+//! files, never in the repository), and as plain shapes otherwise.
 use super::event_loop::EventLoopCtl;
 use super::input_trace::InputOrigin;
 use super::{Game, Screen};
 use horizon_client::held::Source;
 use horizon_client::{
     Result,
-    hud::{HudAtlas, HudBatch, rgba},
+    hud::{self, HudAtlas, HudBatch, rgba},
     keybinds::{KeyBinds, key_code, mouse_button},
     keymapping::SNEAK,
 };
 use horizon_client_input::touch::{
-    Button, Control, Layout, Mode, Output, Phase, Rect, TouchInput, available as enabled,
+    Button, Control, JUMP_SIDE, Layout, Mode, Output, Phase, Rect, TouchInput, available as enabled,
 };
 use std::time::Instant;
 use winit::{
@@ -28,8 +31,6 @@ use winit::{
     keyboard::{KeyCode, ModifiersState},
 };
 
-/// A touch button's side, in points.
-const BUTTON_POINTS: f32 = 56.0;
 /// Kept clear at the sides of a phone with a notch, in points.
 const NOTCH_POINTS: f32 = 48.0;
 /// The view turns as far as a mouse moved this many counts per point of
@@ -61,10 +62,11 @@ impl Game<'_> {
         // Phones with a notch are wider than 16:9; tablets and older phones have no notch.
         let notched = batch.width / batch.height > 1.9;
         let settings = &self.settings.controller.touch;
+        let player = self.player.as_ref();
         let layout = Layout {
             width: batch.width,
             height: batch.height,
-            unit: BUTTON_POINTS * per_point * settings.scale(),
+            unit: JUMP_SIDE * batch.height * settings.scale(),
             inset: if notched {
                 NOTCH_POINTS * per_point
             } else {
@@ -72,6 +74,7 @@ impl Game<'_> {
             },
             left_handed: settings.left_handed,
             minimal: !settings.enabled,
+            flying: player.is_some_and(|p| p.flying || p.fluids.was_touching_water),
         };
         Some((layout, batch.scale))
     }
@@ -106,20 +109,25 @@ impl Game<'_> {
         ];
         self.last_input = Instant::now();
         let mode = self.touch_mode();
-        // A finger on a screen with a focused text box brings back the
-        // keyboard the player hid (iOS hides it without telling the game).
-        if phase == Phase::Started
-            && mode != Mode::Play
-            && self.ime_allowed
-            && let Some(window) = &self.window
-        {
-            window.set_ime_allowed(true);
-        }
         self.touch.input.set_mode(mode);
         self.touch
             .input
             .event(touch.id, phase, pos, Instant::now(), &layout);
         self.touch_apply(event_loop, scale);
+        // A finger on a screen with a focused text box brings back the
+        // keyboard the player hid (iOS hides it without telling the game).
+        // Only once it lifts, after its click: the keyboard shrinks the view
+        // and moves the screen's widgets, so showing it under a finger still
+        // down sends that finger's click to where the widgets were.
+        if phase == Phase::Ended && mode != Mode::Play {
+            // The click may have moved the focus or closed the screen.
+            self.sync_ime();
+            if self.ime_allowed
+                && let Some(window) = &self.window
+            {
+                window.set_ime_allowed(true);
+            }
+        }
         true
     }
 
@@ -176,6 +184,18 @@ impl Game<'_> {
             return None;
         }
         self.touch.input.movement()
+    }
+
+    /// The touch controls hold sneak (slot 0: the descend button) or sprint
+    /// (slot 1: its button, or the stick pushed forward) with no Shift or Ctrl
+    /// behind it, so `heal_hold_latches` must leave the latch alone.
+    pub(super) fn touch_holds_latch(&self, slot: usize) -> bool {
+        enabled()
+            && match slot {
+                0 => self.touch.input.holding(Control::Descend),
+                1 => self.touch.input.sprinting(),
+                _ => false,
+            }
     }
 
     fn touch_apply(&mut self, event_loop: &dyn EventLoopCtl, scale: f32) {
@@ -344,24 +364,42 @@ impl Game<'_> {
         let fade = 2.0 * self.settings.controller.touch.opacity;
         match self.touch_mode() {
             Mode::Play => {
+                let swimming = self
+                    .player
+                    .as_ref()
+                    .is_some_and(|p| p.fluids.was_touching_water);
                 for control in Control::PLAY {
-                    if layout.minimal && control != Control::Pause {
+                    if !layout.shown(control) {
                         continue;
                     }
                     let held = self.touch.input.holding(control)
                         || (control == Control::Sneak && self.toggles.is_down(SNEAK));
                     if let Some(r) = layout.rect(control) {
-                        draw_button(batch, atlas, r, control, held, fade);
+                        let looks = bedrock_sprite(control, layout.flying, swimming);
+                        if !draw_bedrock(batch, atlas, r, control, looks, held, fade) {
+                            draw_button(batch, atlas, r, control, held, fade);
+                        }
                     }
                 }
-                if let Some((origin, finger, radius)) = self.touch.input.stick_at() {
+                // The stick rests at the bottom left, as Bedrock's does.
+                let (origin, knob, radius) = match self.touch.input.stick_at() {
+                    Some((origin, finger, radius)) => {
+                        let d = (finger[0] - origin[0]).hypot(finger[1] - origin[1]);
+                        let k = if d > radius { radius / d } else { 1.0 };
+                        let knob = [
+                            origin[0] + (finger[0] - origin[0]) * k,
+                            origin[1] + (finger[1] - origin[1]) * k,
+                        ];
+                        (origin, knob, radius)
+                    }
+                    None if !layout.minimal => {
+                        let home = layout.stick_home();
+                        (home, home, layout.stick_radius())
+                    }
+                    None => return,
+                };
+                if !draw_bedrock_stick(batch, atlas, origin, knob, radius, fade) {
                     disc(batch, atlas, origin, radius, faded(0, 70, fade));
-                    let d = (finger[0] - origin[0]).hypot(finger[1] - origin[1]);
-                    let k = if d > radius { radius / d } else { 1.0 };
-                    let knob = [
-                        origin[0] + (finger[0] - origin[0]) * k,
-                        origin[1] + (finger[1] - origin[1]) * k,
-                    ];
                     disc(batch, atlas, knob, radius * 0.45, faded(255, 110, fade));
                 }
             }
@@ -385,6 +423,201 @@ fn touch_button(button: Button) -> MouseButton {
 /// Grey `v` at `alpha` scaled by `fade`.
 fn faded(v: u8, alpha: u8, fade: f32) -> u32 {
     rgba(v, v, v, (f32::from(alpha) * fade).round().min(255.0) as u8)
+}
+
+/// A Bedrock texture under `textures/gui/bedrock` (`ui/jump`).
+fn bedrock(atlas: &HudAtlas, name: &str) -> Option<hud::Rect> {
+    atlas.sprites.get(&format!("gui/bedrock/{name}")).copied()
+}
+
+/// The `[x, y, w, h]` texels `region` of `sprite` over `r`, sampled at the
+/// texel centres so a scaled-up button takes nothing of its atlas neighbours.
+fn blit(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: hud::Rect,
+    region: Rect,
+    r: Rect,
+    color: u32,
+) {
+    let [sx, sy, sw, sh] = region;
+    let (du, dv) = (
+        (sprite.u1 - sprite.u0) / sprite.w as f32,
+        (sprite.v1 - sprite.v0) / sprite.h as f32,
+    );
+    let (hu, hv) = (
+        0.5 / atlas.width.max(1) as f32,
+        0.5 / atlas.height.max(1) as f32,
+    );
+    let uv = hud::Rect {
+        u0: sprite.u0 + sx * du + hu,
+        v0: sprite.v0 + sy * dv + hv,
+        u1: sprite.u0 + (sx + sw) * du - hu,
+        v1: sprite.v0 + (sy + sh) * dv - hv,
+        ..sprite
+    };
+    batch.rect_uv(r[0], r[1], r[2], r[3], uv, color);
+}
+
+/// A whole sprite over `r`, or fitted inside it keeping its shape (the
+/// pause bars, the inventory's dots).
+fn blit_all(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: hud::Rect,
+    r: Rect,
+    fit: bool,
+    color: u32,
+) {
+    let (sw, sh) = (sprite.w as f32, sprite.h as f32);
+    let r = if fit {
+        let k = (r[2] / sw).min(r[3] / sh);
+        let (w, h) = (sw * k, sh * k);
+        [r[0] + (r[2] - w) / 2.0, r[1] + (r[3] - h) / 2.0, w, h]
+    } else {
+        r
+    };
+    blit(batch, atlas, sprite, [0.0, 0.0, sw, sh], r, color);
+}
+
+/// The Bedrock texture a button wears (its pressed look adds `_pressed`);
+/// `None` for those drawn from pieces of `gui/gui`.
+fn bedrock_sprite(control: Control, flying: bool, swimming: bool) -> Option<&'static str> {
+    Some(match control {
+        Control::Jump if swimming => "gui/controls/waterascend",
+        Control::Descend if swimming => "gui/controls/waterdescend",
+        Control::Jump if flying => "gui/controls/flyingascend",
+        Control::Descend => "gui/controls/flyingdescend",
+        Control::Jump => "ui/jump",
+        Control::Sneak => "ui/sneak",
+        Control::Sprint => "ui/sprint",
+        Control::Attack => "ui/attack",
+        Control::Interact => "ui/interact",
+        _ => return None,
+    })
+}
+
+/// A button in Bedrock's textures; false when the resources lack them.
+fn draw_bedrock(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    r: Rect,
+    control: Control,
+    looks: Option<&str>,
+    held: bool,
+    fade: f32,
+) -> bool {
+    let color = faded(255, 166, fade);
+    if let Some(name) = looks {
+        let pressed = held
+            .then(|| bedrock(atlas, &format!("{name}_pressed")))
+            .flatten();
+        let Some(sprite) = pressed.or_else(|| bedrock(atlas, name)) else {
+            return false;
+        };
+        blit_all(batch, atlas, sprite, r, false, color);
+        return true;
+    }
+    let Some(gui) = bedrock(atlas, "gui/gui") else {
+        return false;
+    };
+    // `gui/gui`'s chat button (18 x 18 at 200, 82): its frame is pause's too.
+    const CHAT: Rect = [200.0, 82.0, 18.0, 18.0];
+    let [x, y, w, h] = r;
+    let tint = if held { faded(160, 166, fade) } else { color };
+    match control {
+        Control::Chat => blit(batch, atlas, gui, CHAT, r, tint),
+        Control::Pause => {
+            let Some(bars) = bedrock(atlas, "ui/pause_icon") else {
+                return false;
+            };
+            // The chat button's frame without its bubble: nine pieces, the
+            // middle one filled from a texel of its plain inside. (Covering the
+            // bubble instead lets it show through: the controls are see-through.)
+            let xs = [200.0, 202.0, 216.0, 218.0];
+            let ys = [82.0, 84.0, 96.0, 100.0];
+            let dx = [x, x + w * 2.0 / 18.0, x + w * 16.0 / 18.0, x + w];
+            let dy = [y, y + h * 2.0 / 18.0, y + h * 14.0 / 18.0, y + h];
+            for row in 0..3 {
+                for col in 0..3 {
+                    let source = if (row, col) == (1, 1) {
+                        [202.0, 84.0, 1.0, 1.0]
+                    } else {
+                        [
+                            xs[col],
+                            ys[row],
+                            xs[col + 1] - xs[col],
+                            ys[row + 1] - ys[row],
+                        ]
+                    };
+                    let to = [
+                        dx[col],
+                        dy[row],
+                        dx[col + 1] - dx[col],
+                        dy[row + 1] - dy[row],
+                    ];
+                    blit(batch, atlas, gui, source, to, tint);
+                }
+            }
+            let icon = [x + w * 0.25, y + h * 0.2, w * 0.5, h * 0.5];
+            blit_all(batch, atlas, bars, icon, true, tint);
+        }
+        Control::Inventory => {
+            let (Some(knob), Some(dots)) = (
+                bedrock(atlas, "ui/joystick_knob"),
+                bedrock(atlas, "ui/more-dots"),
+            ) else {
+                return false;
+            };
+            blit_all(batch, atlas, knob, r, false, tint);
+            let inner = [x + w * 0.2, y + h * 0.2, w * 0.6, h * 0.6];
+            blit_all(batch, atlas, dots, inner, true, tint);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Bedrock's stick: its frame around `origin`, the knob towards the finger
+/// (half its reach, so it stays on the frame); false without the textures.
+fn draw_bedrock_stick(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    origin: [f32; 2],
+    knob: [f32; 2],
+    radius: f32,
+    fade: f32,
+) -> bool {
+    let (Some(frame), Some(ball)) = (
+        bedrock(atlas, "ui/joystick_frame"),
+        bedrock(atlas, "ui/joystick_knob"),
+    ) else {
+        return false;
+    };
+    let color = faded(255, 166, fade);
+    let r = radius;
+    blit_all(
+        batch,
+        atlas,
+        frame,
+        [origin[0] - r, origin[1] - r, 2.0 * r, 2.0 * r],
+        false,
+        color,
+    );
+    let c = [
+        origin[0] + (knob[0] - origin[0]) * 0.5,
+        origin[1] + (knob[1] - origin[1]) * 0.5,
+    ];
+    let k = r * 0.34;
+    blit_all(
+        batch,
+        atlas,
+        ball,
+        [c[0] - k, c[1] - k, 2.0 * k, 2.0 * k],
+        false,
+        color,
+    );
+    true
 }
 
 /// A filled circle (a 20-gon).
@@ -446,18 +679,25 @@ fn draw_button(
             [p(0.0, -0.22), p(0.24, 0.14), p(-0.24, 0.14), p(0.0, -0.22)],
             ink,
         ),
-        Control::Sneak => batch.fill_quad(
+        Control::Descend => batch.fill_quad(
             atlas,
             [p(0.0, 0.22), p(-0.24, -0.14), p(0.24, -0.14), p(0.0, 0.22)],
             ink,
         ),
-        Control::Attack => {
-            line(batch, atlas, p(-0.2, -0.2), p(0.2, 0.2), stroke, ink);
-            line(batch, atlas, p(-0.2, 0.2), p(0.2, -0.2), stroke, ink);
+        Control::Sneak => {
+            // A chevron pointing down over the ground.
+            line(batch, atlas, p(-0.2, -0.14), p(0.0, 0.06), stroke, ink);
+            line(batch, atlas, p(0.0, 0.06), p(0.2, -0.14), stroke, ink);
+            line(batch, atlas, p(-0.24, 0.22), p(0.24, 0.22), stroke, ink);
         }
-        Control::Use => {
-            line(batch, atlas, p(0.0, -0.22), p(0.0, 0.22), stroke, ink);
-            line(batch, atlas, p(-0.22, 0.0), p(0.22, 0.0), stroke, ink);
+        Control::Interact => {
+            line(batch, atlas, p(0.0, -0.24), p(0.0, 0.24), stroke, ink);
+            line(batch, atlas, p(-0.24, 0.0), p(0.24, 0.0), stroke, ink);
+        }
+        Control::Attack => {
+            // Crossed blades.
+            line(batch, atlas, p(-0.22, -0.22), p(0.22, 0.22), stroke, ink);
+            line(batch, atlas, p(0.22, -0.22), p(-0.22, 0.22), stroke, ink);
         }
         Control::Inventory => {
             for u in [-0.22, 0.0, 0.22] {
@@ -465,15 +705,6 @@ fn draw_button(
                 let [px, py] = p(u, 0.0);
                 batch.fill(atlas, px - d / 2.0, py - d / 2.0, d, d, ink);
             }
-        }
-        Control::Drop => {
-            line(batch, atlas, p(0.0, -0.25), p(0.0, 0.02), stroke, ink);
-            batch.fill_quad(
-                atlas,
-                [p(0.0, 0.18), p(-0.16, 0.0), p(0.16, 0.0), p(0.0, 0.18)],
-                ink,
-            );
-            line(batch, atlas, p(-0.22, 0.27), p(0.22, 0.27), stroke, ink);
         }
         Control::Pause => {
             line(batch, atlas, p(-0.1, -0.2), p(-0.1, 0.2), stroke * 1.3, ink);
@@ -504,6 +735,13 @@ fn draw_button(
                 ink,
             );
         }
-        Control::Sprint => {}
+        Control::Sprint => {
+            // Two chevrons pointing ahead.
+            for v in [-0.02, 0.16] {
+                line(batch, atlas, p(-0.2, v), p(0.0, v - 0.18), stroke, ink);
+                line(batch, atlas, p(0.0, v - 0.18), p(0.2, v), stroke, ink);
+            }
+        }
+        Control::Use | Control::Drop => {}
     }
 }

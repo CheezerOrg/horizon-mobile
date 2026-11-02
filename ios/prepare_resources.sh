@@ -89,3 +89,5 @@ else
         --server-jar "$HORIZON_LAUNCHER_HOME/server-jars/$version.jar"
 fi
 echo "Resources ready in $out ($(du -sh "$out" | cut -f1))."
+echo "==> Bedrock Edition's touch control textures"
+"$repo/ios/bedrock_controls.sh"

@@ -3,9 +3,13 @@
 //! over menus. Pure logic in GUI pixels: the game feeds it the window's
 //! touches, then acts on what it reports.
 //!
-//! Playing: a floating stick on the left, the view on the right (holding a
-//! finger still there attacks, a quick tap uses), buttons on the right and
-//! beside the hotbar, and the hotbar's slots. Menus: a tap is a left click,
+//! Playing, Bedrock Edition's touch layout with its split controls (at the
+//! spots horizon-android's Bedrock layout gives): the stick at the bottom
+//! left, jump, sneak and sprint at the bottom right (ascend and descend while
+//! flying or swimming), attack and interact buttons above them, pause and chat
+//! at the top centre, and the inventory beside the hotbar. A finger on the
+//! view only turns it: the buttons act at the crosshair. Holding a hotbar slot
+//! drops its item. Menus: a tap is a left click,
 //! a long press a right click, a drag a left drag, two fingers dragging
 //! scroll and a two-finger tap is a Shift click.
 use crate::gamepad;
@@ -17,17 +21,18 @@ use std::{
 
 /// Held still this long, a finger right clicks in menus.
 pub const LONG_PRESS: Duration = Duration::from_millis(450);
-/// Held still this long on the view, a finger attacks (mines) until it lifts.
-pub const HOLD_ATTACK: Duration = Duration::from_millis(300);
-/// Lifted within this, a finger that stayed still on the view uses.
-pub const TAP: Duration = Duration::from_millis(250);
-/// The game samples input once per tick: a tap's release waits this long so
-/// the press is seen.
+/// Held this long on a hotbar slot, a finger drops the slot's item.
+pub const HOLD_DROP: Duration = Duration::from_millis(500);
+/// The game samples input once per tick: a timed press's release waits this
+/// long so the press is seen.
 pub const TAP_HOLD: Duration = Duration::from_millis(60);
 /// The stick's deadzone, as a fraction of its radius.
 pub const MOVE_DEADZONE: f32 = 0.15;
 /// GUI pixels of two-finger travel per scroll-wheel line.
 pub const SCROLL_STEP: f32 = 10.0;
+/// Bedrock's jump button's side, as a fraction of the screen's height: the
+/// `unit` the other controls are sized by.
+pub const JUMP_SIDE: f32 = 0.16;
 /// The vanilla hotbar's size in GUI pixels.
 const HOTBAR_WIDTH: f32 = 182.0;
 const HOTBAR_HEIGHT: f32 = 22.0;
@@ -50,7 +55,7 @@ pub enum Control {
     Use,
     Inventory,
     Drop,
-    /// The stick pushed all the way forward.
+    /// Its button, or the stick pushed all the way forward.
     Sprint,
     /// Opens the pause menu while playing.
     Pause,
@@ -58,19 +63,24 @@ pub enum Control {
     Back,
     /// Opens the chat (and with it the keyboard).
     Chat,
+    /// Sneak held, in place of the toggle while flying or swimming.
+    Descend,
+    /// Uses (the use key) at the crosshair: Bedrock's interact button.
+    Interact,
 }
 
 impl Control {
     /// The buttons drawn while playing.
-    pub const PLAY: [Control; 8] = [
+    pub const PLAY: [Control; 9] = [
         Control::Pause,
         Control::Chat,
         Control::Jump,
         Control::Sneak,
+        Control::Descend,
+        Control::Sprint,
         Control::Attack,
-        Control::Use,
+        Control::Interact,
         Control::Inventory,
-        Control::Drop,
     ];
 
     /// The vanilla key mapping it acts as; `None` for the ones the game
@@ -78,9 +88,9 @@ impl Control {
     pub fn mapping(self) -> Option<&'static str> {
         Some(match self {
             Control::Jump => "key.jump",
-            Control::Sneak => "key.sneak",
+            Control::Sneak | Control::Descend => "key.sneak",
             Control::Attack => "key.attack",
-            Control::Use => "key.use",
+            Control::Use | Control::Interact => "key.use",
             Control::Inventory => "key.inventory",
             Control::Drop => "key.drop",
             Control::Sprint => "key.sprint",
@@ -138,7 +148,8 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 pub struct Layout {
     pub width: f32,
     pub height: f32,
-    /// A button's side.
+    /// The jump button's side ([`JUMP_SIDE`] of the height, at the default
+    /// size); the other controls are sized by it.
     pub unit: f32,
     /// Kept clear at the left and right edges (the notch, rounded corners).
     pub inset: f32,
@@ -147,6 +158,8 @@ pub struct Layout {
     /// The on-screen controls are off: only the pause button is left, so a
     /// phone with no keyboard can still reach the settings.
     pub minimal: bool,
+    /// Flying or swimming: descend in place of sneak.
+    pub flying: bool,
 }
 
 impl Layout {
@@ -169,39 +182,78 @@ impl Layout {
 
     /// The stick's reach from where the finger landed.
     pub fn stick_radius(&self) -> f32 {
-        self.unit * 1.1
+        self.unit
+    }
+
+    /// Whether the button is on the screen while playing.
+    pub fn shown(&self, control: Control) -> bool {
+        match control {
+            Control::Pause => true,
+            _ if self.minimal => false,
+            Control::Chat
+            | Control::Jump
+            | Control::Sprint
+            | Control::Attack
+            | Control::Interact
+            | Control::Inventory => true,
+            Control::Sneak => !self.flying,
+            Control::Descend => self.flying,
+            Control::Use | Control::Drop | Control::Back => false,
+        }
+    }
+
+    /// A square of `side` centred at fractions `fx`, `fy` of the screen
+    /// (across the width inside the insets), kept on the screen and, where it
+    /// would sit on Java's hotbar (wider than Bedrock's on a tablet), above it.
+    fn spot(&self, fx: f32, fy: f32, side: f32) -> Rect {
+        let (w, h, half) = (self.width, self.height, side / 2.0);
+        let m = self.unit * 0.1;
+        let cx = self.inset + fx * (w - 2.0 * self.inset);
+        let cx = cx.clamp(self.inset + m + half, w - self.inset - m - half);
+        let mut cy = (fy * h).clamp(m + half, h - m - half);
+        let hotbar = w / 2.0 - HOTBAR_WIDTH / 2.0;
+        // The hotbar and the inventory button beside it.
+        let (left, right) = (hotbar, hotbar + HOTBAR_WIDTH + 2.0 + HOTBAR_HEIGHT);
+        let top = h - HOTBAR_HEIGHT - m;
+        if cx + half > left && cx - half < right && cy + half > top {
+            cy = top - half;
+        }
+        [cx - half, cy - half, side, side]
+    }
+
+    /// The stick's centre while no finger holds it.
+    pub fn stick_home(&self) -> [f32; 2] {
+        let r = self.stick_radius();
+        let [x, y, _, _] = self.spot(0.13, 0.76, 2.0 * r);
+        [self.mirror_x(x + r), y + r]
     }
 
     /// The button's rectangle; `None` for controls with no button.
     pub fn rect(&self, control: Control) -> Option<Rect> {
-        let (w, h, u) = (self.width, self.height, self.unit);
-        let m = u * 0.3;
-        let right = w - self.inset - m;
-        let corner = u * 0.7;
+        let (w, u) = (self.width, self.unit);
         let hotbar = w / 2.0 - HOTBAR_WIDTH / 2.0;
+        // Bedrock's pause sits at the top centre, chat just left of it.
+        let small = u * 0.47;
+        let top = u * 0.1;
         let r = match control {
-            // Top left on either hand: toasts and effect icons take the top right.
-            Control::Pause | Control::Back => {
-                return Some([self.inset + m, m * 0.5, corner, corner]);
-            }
-            Control::Chat => return Some([self.inset + 2.0 * m + corner, m * 0.5, corner, corner]),
-            Control::Jump => [right - u, h - m - u, u, u],
-            Control::Sneak => [right - 2.0 * u - m, h - m - u, u, u],
-            Control::Attack => [right - u, h - 2.0 * (m + u), u, u],
-            Control::Use => [right - 2.0 * u - m, h - 2.0 * (m + u), u, u],
+            Control::Pause => return Some([(w - small) / 2.0, top, small, small]),
+            Control::Chat => return Some([(w - small) / 2.0 - top - small, top, small, small]),
+            // Top left on either hand: toasts take the top right, and a
+            // screen's title the top centre.
+            Control::Back => return Some([self.inset + top, top, small, small]),
+            Control::Jump => self.spot(0.92, 0.78, u),
+            Control::Sneak | Control::Descend => self.spot(0.81, 0.86, u * 0.72),
+            Control::Sprint => self.spot(0.72, 0.78, u * 0.66),
+            // Bedrock's split controls: attack left of interact, a step lower.
+            Control::Attack => self.spot(0.80, 0.64, u),
+            Control::Interact => self.spot(0.92, 0.52, u),
             Control::Inventory => [
                 hotbar + HOTBAR_WIDTH + 2.0,
-                h - HOTBAR_HEIGHT,
+                self.height - HOTBAR_HEIGHT,
                 HOTBAR_HEIGHT,
                 HOTBAR_HEIGHT,
             ],
-            Control::Drop => [
-                hotbar - 2.0 - HOTBAR_HEIGHT,
-                h - HOTBAR_HEIGHT,
-                HOTBAR_HEIGHT,
-                HOTBAR_HEIGHT,
-            ],
-            Control::Sprint => return None,
+            Control::Use | Control::Drop => return None,
         };
         Some(self.mirror(r))
     }
@@ -211,7 +263,7 @@ impl Layout {
         match mode {
             Mode::Play => Control::PLAY
                 .into_iter()
-                .filter(|&c| !self.minimal || c == Control::Pause)
+                .filter(|&c| self.shown(c))
                 .find(|&c| self.rect(c).is_some_and(|r| contains(r, p))),
             Mode::Menu { back: true } => {
                 (self.rect(Control::Back).is_some_and(|r| contains(r, p))).then_some(Control::Back)
@@ -415,17 +467,16 @@ enum MenuState {
 #[derive(Clone, Copy, Debug)]
 enum Role {
     Button(Control),
-    Hotbar,
+    Hotbar {
+        since: Instant,
+        dropped: bool,
+    },
     Stick {
         origin: [f32; 2],
         radius: f32,
     },
-    Look {
-        start: [f32; 2],
-        since: Instant,
-        moved: bool,
-        attacking: bool,
-    },
+    /// Turns the view.
+    Look,
     Menu {
         start: [f32; 2],
         since: Instant,
@@ -479,9 +530,6 @@ impl TouchInput {
         for finger in &mut self.fingers {
             match finger.role {
                 Role::Button(c) => self.out.push(Output::Release(c)),
-                Role::Look {
-                    attacking: true, ..
-                } => self.out.push(Output::Release(Control::Attack)),
                 Role::Menu {
                     state: MenuState::Dragging,
                     ..
@@ -527,7 +575,7 @@ impl TouchInput {
     fn play_role(&mut self, pos: [f32; 2], now: Instant, layout: &Layout) -> Role {
         let taken = |f: &Finger, stick: bool| match f.role {
             Role::Stick { .. } => stick,
-            Role::Look { .. } => !stick,
+            Role::Look => !stick,
             _ => false,
         };
         if let Some(control) = layout.button_at(pos, Mode::Play) {
@@ -537,25 +585,29 @@ impl TouchInput {
             Role::Ignored
         } else if let Some(slot) = layout.hotbar_slot(pos) {
             self.out.push(Output::Hotbar(slot));
-            Role::Hotbar
+            Role::Hotbar {
+                since: now,
+                dropped: false,
+            }
         } else if layout.in_stick_zone(pos) {
             if self.fingers.iter().any(|f| taken(f, true)) {
                 Role::Ignored
             } else {
-                Role::Stick {
-                    origin: pos,
-                    radius: layout.stick_radius(),
-                }
+                // On the drawn stick it starts from there, elsewhere where
+                // the finger landed.
+                let radius = layout.stick_radius();
+                let home = layout.stick_home();
+                let origin = if distance(pos, home) <= radius {
+                    home
+                } else {
+                    pos
+                };
+                Role::Stick { origin, radius }
             }
         } else if self.fingers.iter().any(|f| taken(f, false)) {
             Role::Ignored
         } else {
-            Role::Look {
-                start: pos,
-                since: now,
-                moved: false,
-                attacking: false,
-            }
+            Role::Look
         }
     }
 
@@ -578,15 +630,31 @@ impl TouchInput {
             .fingers
             .iter_mut()
             .find(|f| matches!(f.role, Role::Menu { .. }) && f.id != id);
-        match primary {
-            Some(first) => {
-                let Role::Menu {
-                    start,
+        // A finger that already dragged or long-pressed has had its say: the
+        // new one takes over (its drag ends where it is). Ignoring the new
+        // one instead would leave the menu deaf for as long as a finger whose
+        // lift never came (the app went to the background) stays listed.
+        let primary = match primary {
+            Some(first) => match first.role {
+                Role::Menu {
                     state: MenuState::Pending,
                     ..
-                } = first.role
-                else {
-                    // A drag or a long press is already under way.
+                } => Some(first),
+                Role::Menu { state, .. } => {
+                    if matches!(state, MenuState::Dragging) {
+                        self.out
+                            .push(Output::PointerRelease(Button::Left, first.pos));
+                    }
+                    first.role = Role::Ignored;
+                    None
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        match primary {
+            Some(first) => {
+                let Role::Menu { start, .. } = first.role else {
                     return Role::Ignored;
                 };
                 first.role = Role::Two;
@@ -625,12 +693,9 @@ impl TouchInput {
                     origin[1] += (pos[1] - origin[1]) * k;
                 }
             }
-            Role::Look { start, moved, .. } => {
+            Role::Look => {
                 self.look[0] += pos[0] - old[0];
                 self.look[1] += pos[1] - old[1];
-                if distance(pos, *start) > layout.slop() {
-                    *moved = true;
-                }
             }
             Role::Menu { start, state, .. } => match state {
                 MenuState::Pending if distance(pos, *start) > layout.slop() => {
@@ -658,7 +723,7 @@ impl TouchInput {
                     self.out.push(Output::Scroll(dy / SCROLL_STEP));
                 }
             }
-            Role::Button(_) | Role::Hotbar | Role::Ignored => {}
+            Role::Button(_) | Role::Hotbar { .. } | Role::Ignored => {}
         }
     }
 
@@ -669,17 +734,6 @@ impl TouchInput {
         let finger = self.fingers.remove(i);
         match finger.role {
             Role::Button(control) => self.out.push(Output::Release(control)),
-            Role::Look {
-                attacking: true, ..
-            } => self.out.push(Output::Release(Control::Attack)),
-            Role::Look {
-                moved: false,
-                since,
-                ..
-            } if !cancelled && now.duration_since(since) < TAP => {
-                self.out.push(Output::Press(Control::Use));
-                self.late.push((Control::Use, now + TAP_HOLD));
-            }
             Role::Menu { start, state, .. } => match state {
                 MenuState::Pending if !cancelled => {
                     self.out.push(Output::PointerPress(Button::Left, start));
@@ -710,14 +764,12 @@ impl TouchInput {
     pub fn frame(&mut self, now: Instant) {
         for finger in &mut self.fingers {
             match &mut finger.role {
-                Role::Look {
-                    since,
-                    moved: false,
-                    attacking,
-                    ..
-                } if !*attacking && now.duration_since(*since) >= HOLD_ATTACK => {
-                    *attacking = true;
-                    self.out.push(Output::Press(Control::Attack));
+                Role::Hotbar { since, dropped }
+                    if !*dropped && now.duration_since(*since) >= HOLD_DROP =>
+                {
+                    *dropped = true;
+                    self.out.push(Output::Press(Control::Drop));
+                    self.late.push((Control::Drop, now + TAP_HOLD));
                 }
                 Role::Menu {
                     start,
@@ -803,6 +855,11 @@ impl TouchInput {
             .any(|f| matches!(f.role, Role::Button(c) if c == control))
     }
 
+    /// Sprint is held: its button, or the stick pushed all the way forward.
+    pub fn sprinting(&self) -> bool {
+        self.sprinting || self.holding(Control::Sprint)
+    }
+
     /// No finger is on the screen.
     pub fn idle(&self) -> bool {
         self.fingers.is_empty()
@@ -821,20 +878,22 @@ mod tests {
         Layout {
             width: 562.0,
             height: 287.0,
-            unit: 39.0,
+            unit: 287.0 * JUMP_SIDE,
             inset: 44.0,
             left_handed: false,
             minimal: false,
+            flying: false,
         }
     }
     fn tablet() -> Layout {
         Layout {
             width: 342.0,
             height: 256.0,
-            unit: 13.0,
+            unit: 256.0 * JUMP_SIDE,
             inset: 0.0,
             left_handed: false,
             minimal: false,
+            flying: false,
         }
     }
 
@@ -872,18 +931,25 @@ mod tests {
 
     #[test]
     fn buttons_fit_the_screen_without_overlapping_each_other_or_the_hotbar() {
-        for layout in [
-            phone(),
-            tablet(),
-            Layout {
-                left_handed: true,
-                ..phone()
-            },
-        ] {
+        let every = |base: Layout| {
+            [false, true]
+                .map(|flying| Layout { flying, ..base })
+                .into_iter()
+        };
+        let left = Layout {
+            left_handed: true,
+            ..phone()
+        };
+        for layout in every(phone()).chain(every(tablet())).chain(every(left)) {
             let hotbar = [layout.width / 2.0 - 91.0, layout.height - 22.0, 182.0, 22.0];
+            let r = layout.stick_radius();
+            let [sx, sy] = layout.stick_home();
+            let stick = [sx - r, sy - r, 2.0 * r, 2.0 * r];
             let rects: Vec<Rect> = Control::PLAY
                 .iter()
+                .filter(|&&c| layout.shown(c))
                 .map(|&c| layout.rect(c).unwrap())
+                .chain([stick])
                 .collect();
             for (i, &a) in rects.iter().enumerate() {
                 assert!(a[0] >= 0.0 && a[1] >= 0.0, "{layout:?} {a:?}");
@@ -916,8 +982,15 @@ mod tests {
         assert!(left.in_stick_zone(low_right) && !left.in_stick_zone(low_left));
         assert!(right.rect(Control::Jump).unwrap()[0] > right.width / 2.0);
         assert!(left.rect(Control::Jump).unwrap()[0] < left.width / 2.0);
-        // The pause button stays clear of the toasts at the top right.
-        assert!(left.rect(Control::Pause).unwrap()[0] < left.width / 2.0);
+        assert!(right.stick_home()[0] < right.width / 2.0);
+        assert!(left.stick_home()[0] > left.width / 2.0);
+        // Pause stays at the top centre on either hand, chat just left of it.
+        for layout in [right, left] {
+            let pause = layout.rect(Control::Pause).unwrap();
+            let chat = layout.rect(Control::Chat).unwrap();
+            assert!(pause[0] < layout.width / 2.0 && pause[0] + pause[2] > layout.width / 2.0);
+            assert!(chat[0] + chat[2] <= pause[0]);
+        }
     }
 
     #[test]
@@ -941,6 +1014,43 @@ mod tests {
         assert_eq!(
             rig.frame(80),
             [
+                Output::PointerMove([100.0, 100.0]),
+                Output::PointerPress(Button::Left, [100.0, 100.0]),
+                Output::PointerRelease(Button::Left, [100.0, 100.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finger_whose_lift_never_came_does_not_block_the_next_tap() {
+        let mut rig = Rig::new(MENU);
+        // Finger 1 lands and its end is lost: by now it counts as a long press.
+        rig.touch(1, Phase::Started, [50.0, 50.0], 0);
+        rig.frame(500);
+        rig.touch(2, Phase::Started, [100.0, 100.0], 1000);
+        rig.touch(2, Phase::Ended, [100.0, 100.0], 1080);
+        assert_eq!(
+            rig.frame(1080),
+            [
+                Output::PointerMove([100.0, 100.0]),
+                Output::PointerPress(Button::Left, [100.0, 100.0]),
+                Output::PointerRelease(Button::Left, [100.0, 100.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_finger_ends_a_drag_still_listed_and_clicks() {
+        let mut rig = Rig::new(MENU);
+        rig.touch(1, Phase::Started, [50.0, 50.0], 0);
+        rig.touch(1, Phase::Moved, [90.0, 50.0], 30);
+        rig.input.take();
+        rig.touch(2, Phase::Started, [100.0, 100.0], 1000);
+        rig.touch(2, Phase::Ended, [100.0, 100.0], 1080);
+        assert_eq!(
+            rig.frame(1080),
+            [
+                Output::PointerRelease(Button::Left, [90.0, 50.0]),
                 Output::PointerMove([100.0, 100.0]),
                 Output::PointerPress(Button::Left, [100.0, 100.0]),
                 Output::PointerRelease(Button::Left, [100.0, 100.0]),
@@ -1054,16 +1164,16 @@ mod tests {
     fn pushing_the_stick_up_walks_forward_and_a_nudge_does_nothing() {
         let mut rig = Rig::new(PLAY);
         let r = rig.layout.stick_radius();
-        rig.touch(1, Phase::Started, [80.0, 200.0], 0);
-        rig.touch(1, Phase::Moved, [80.0 + r * 0.1, 200.0], 10);
+        rig.touch(1, Phase::Started, [170.0, 120.0], 0);
+        rig.touch(1, Phase::Moved, [170.0 + r * 0.1, 120.0], 10);
         assert_eq!(rig.input.movement(), None);
-        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 0.6], 20);
+        rig.touch(1, Phase::Moved, [170.0, 120.0 - r * 0.6], 20);
         let [left, forward] = rig.input.movement().unwrap();
         assert!(
             left.abs() < 1e-4 && forward > 0.4 && forward < 0.6,
             "{forward}"
         );
-        rig.touch(1, Phase::Ended, [80.0, 140.0], 30);
+        rig.touch(1, Phase::Ended, [170.0, 60.0], 30);
         assert_eq!(rig.input.movement(), None);
     }
 
@@ -1071,45 +1181,89 @@ mod tests {
     fn the_stick_all_the_way_forward_sprints() {
         let mut rig = Rig::new(PLAY);
         let r = rig.layout.stick_radius();
-        rig.touch(1, Phase::Started, [80.0, 200.0], 0);
-        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 0.5], 10);
+        rig.touch(1, Phase::Started, [170.0, 120.0], 0);
+        rig.touch(1, Phase::Moved, [170.0, 120.0 - r * 0.5], 10);
         assert_eq!(rig.frame(10), []);
-        rig.touch(1, Phase::Moved, [80.0, 200.0 - r * 1.5], 20);
+        rig.touch(1, Phase::Moved, [170.0, 120.0 - r * 1.5], 20);
         assert_eq!(rig.frame(20), [Output::Press(Control::Sprint)]);
-        rig.touch(1, Phase::Ended, [80.0, 100.0], 30);
+        rig.touch(1, Phase::Ended, [170.0, 20.0], 30);
         assert_eq!(rig.frame(30), [Output::Release(Control::Sprint)]);
     }
 
     #[test]
-    fn a_quick_tap_on_the_view_uses_and_releases_after_a_tick() {
+    fn attack_and_interact_hold_their_keys_and_descend_replaces_sneak_while_flying() {
         let mut rig = Rig::new(PLAY);
+        let centre = |r: Rect| [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0];
+        let attack = centre(rig.layout.rect(Control::Attack).unwrap());
+        let interact = centre(rig.layout.rect(Control::Interact).unwrap());
+        rig.touch(1, Phase::Started, attack, 0);
+        rig.touch(2, Phase::Started, interact, 0);
+        assert_eq!(
+            rig.frame(10),
+            [
+                Output::Press(Control::Attack),
+                Output::Press(Control::Interact)
+            ]
+        );
+        // Mining goes on while the finger stays down.
+        assert_eq!(rig.frame(2000), []);
+        rig.touch(1, Phase::Ended, attack, 2100);
+        rig.touch(2, Phase::Ended, interact, 2100);
+        assert_eq!(
+            rig.frame(2100),
+            [
+                Output::Release(Control::Attack),
+                Output::Release(Control::Interact)
+            ]
+        );
+        let sneak = centre(rig.layout.rect(Control::Sneak).unwrap());
+        assert_eq!(rig.layout.button_at(sneak, PLAY), Some(Control::Sneak));
+        rig.layout.flying = true;
+        assert_eq!(rig.layout.button_at(sneak, PLAY), Some(Control::Descend));
+    }
+
+    #[test]
+    fn holding_a_hotbar_slot_selects_it_then_drops_one_item() {
+        let mut rig = Rig::new(PLAY);
+        let x0 = rig.layout.width / 2.0 - 91.0;
+        rig.touch(1, Phase::Started, [x0 + 25.0, rig.layout.height - 5.0], 0);
+        assert_eq!(rig.frame(10), [Output::Hotbar(1)]);
+        assert_eq!(rig.frame(400), []);
+        assert_eq!(rig.frame(510), [Output::Press(Control::Drop)]);
+        assert_eq!(rig.frame(580), [Output::Release(Control::Drop)]);
+        assert_eq!(rig.frame(2000), []);
+        rig.touch(1, Phase::Ended, [x0 + 25.0, rig.layout.height - 5.0], 2100);
+        assert_eq!(rig.frame(2100), []);
+    }
+
+    #[test]
+    fn a_finger_on_the_drawn_stick_pushes_it_from_its_centre() {
+        let mut rig = Rig::new(PLAY);
+        let [hx, hy] = rig.layout.stick_home();
+        let r = rig.layout.stick_radius();
+        // Landing off-centre on the stick already tilts it.
+        rig.touch(1, Phase::Started, [hx, hy - r * 0.8], 0);
+        let [_, up] = rig.input.stick().unwrap();
+        assert!((up - 0.8).abs() < 1e-4, "{up}");
+        rig.touch(1, Phase::Ended, [hx, hy - r * 0.8], 10);
+        // Away from it, the stick starts where the finger lands.
+        rig.touch(2, Phase::Started, [hx + 2.5 * r, hy - 2.0 * r], 20);
+        assert_eq!(rig.input.stick(), Some([0.0, 0.0]));
+    }
+
+    #[test]
+    fn a_finger_on_the_view_only_turns_it_tapped_held_or_dragged() {
+        let mut rig = Rig::new(PLAY);
+        // A tap, then a long hold that drags.
         rig.touch(1, Phase::Started, [400.0, 100.0], 0);
         rig.touch(1, Phase::Ended, [400.0, 100.0], 100);
-        assert_eq!(rig.frame(100), [Output::Press(Control::Use)]);
-        assert_eq!(rig.frame(130), []);
-        assert_eq!(rig.frame(170), [Output::Release(Control::Use)]);
-    }
-
-    #[test]
-    fn holding_still_on_the_view_attacks_until_lifted_even_while_aiming() {
-        let mut rig = Rig::new(PLAY);
-        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
         assert_eq!(rig.frame(200), []);
-        assert_eq!(rig.frame(320), [Output::Press(Control::Attack)]);
-        rig.touch(1, Phase::Moved, [440.0, 100.0], 400);
-        assert_eq!(rig.input.take_look(), [40.0, 0.0]);
-        rig.touch(1, Phase::Ended, [440.0, 100.0], 900);
-        assert_eq!(rig.frame(900), [Output::Release(Control::Attack)]);
-    }
-
-    #[test]
-    fn looking_around_neither_uses_nor_attacks() {
-        let mut rig = Rig::new(PLAY);
-        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
-        rig.touch(1, Phase::Moved, [430.0, 100.0], 50);
-        assert_eq!(rig.frame(600), []);
-        rig.touch(1, Phase::Ended, [430.0, 100.0], 700);
-        assert_eq!(rig.frame(700), []);
+        rig.touch(2, Phase::Started, [400.0, 100.0], 300);
+        assert_eq!(rig.frame(1500), []);
+        rig.touch(2, Phase::Moved, [430.0, 100.0], 1600);
+        assert_eq!(rig.input.take_look(), [30.0, 0.0]);
+        rig.touch(2, Phase::Ended, [430.0, 100.0], 1700);
+        assert_eq!(rig.frame(1700), []);
     }
 
     #[test]

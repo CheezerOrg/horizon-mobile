@@ -10,6 +10,9 @@ upload it or commit what it is built from.
 2. `ios/prepare_resources.sh`: downloads the released launcher (checksum-verified), signs you in with the Microsoft account that
    owns Minecraft (a code to enter in the browser), downloads Minecraft and prepares it into
    `.local/horizon-client/<version>`. The launcher keeps its own data in `.local/ios-launcher`.
+   It also downloads Bedrock Edition's touch control textures from Mojang's bedrock-samples
+   (`ios/bedrock_controls.sh`, checksum-verified, into `.local/bedrock-controls`): Mojang's files
+   too, bundled into the app the same way.
 3. `cp ios/Local.xcconfig.example ios/Local.xcconfig` and set your team and a bundle id of yours.
 
 ## Build and run

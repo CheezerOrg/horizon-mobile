@@ -19,3 +19,13 @@ dest="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/game"
 mkdir -p "$dest"
 # The preparation's logs and lock are not game data.
 rsync -a --delete --exclude "*.log" --exclude ".horizon-prepare.lock" "$src/" "$dest/"
+# Bedrock Edition's touch control textures (Mojang's too, never committed): without them the touch
+# controls draw plain shapes.
+if bedrock="$("$here/bedrock_controls.sh")"; then
+    textures="$dest/assets/minecraft/textures/gui/bedrock"
+    mkdir -p "$textures"
+    rsync -a --delete "$bedrock/resource_pack/textures/" "$textures/"
+    cp "$bedrock/LICENSE.md" "$textures/"
+else
+    echo "warning: no Bedrock control textures: the touch controls draw plain shapes"
+fi

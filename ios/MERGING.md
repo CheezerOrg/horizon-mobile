@@ -16,7 +16,7 @@ git fetch upstream && git checkout ios && git merge upstream/main
   `git grep -n "ios-port:"` after every merge and check each still sits where it should.
   Today they are the touch controls' wiring (the `touch` module and field in `game.rs`, the
   `WindowEvent::Touch` dispatch, `touch_frame` before `poll_pads`, `draw_touch` at the end of the
-  HUD, the stick at the top of `pad_move`, the `touch` control command) and the pointer grab that is
+  HUD, the touch-held sneak and sprint spared in `heal_hold_latches`, the stick at the top of `pad_move`, the `touch` control command) and the pointer grab that is
   the game's own on iOS (`capture`).
 - **The Touch Controls page** (`// ios-port:` too): `Opt::Touch` in `settings.rs`, one arm per
   `Opt` method in `options_ui.rs` (caption, kind, label, value, slider, cycle), `Page::Touch` (its
@@ -36,6 +36,12 @@ git fetch upstream && git checkout ios && git merge upstream/main
 - **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures and
   `TouchSettings`, unit-tested) and `crates/horizon-client/src/game/touch.rs` (the game side).
   Upstream never touches them. `gamepad::length` was made `pub` for them.
+- **Bedrock Edition's control textures**: the touch controls draw them from
+  `textures/gui/bedrock` in the resources. They are Mojang's files (bedrock-samples, under the
+  Minecraft EULA) and are never committed: `ios/bedrock_controls.sh` downloads the files pinned in
+  `ios/bedrock-controls.sha256` into `.local/bedrock-controls`, and `bundle_resources.sh` copies
+  them into the app. Without them the controls draw plain shapes. To see them on the desktop, put
+  them in a resource pack under `assets/minecraft/textures/gui/bedrock`.
 
 Test the touch controls on the desktop: launch with `HORIZON_TOUCH=1`, then
 `horizon-ctl touch start|move|end ID X Y` (GUI pixels) plays fingers and `horizon-ctl options touch`

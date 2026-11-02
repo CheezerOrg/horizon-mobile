@@ -76,6 +76,14 @@ impl Game<'_> {
             self.focus_after_run = Some(focused);
             return;
         }
+        // ios-port: touch controls. Before the screens that drop input
+        // (loading, reloading packs, saving): a lift they swallowed would
+        // leave its finger down. The clicks it makes come back through here.
+        if let WindowEvent::Touch(touch) = &event
+            && self.touch_event(event_loop, touch)
+        {
+            return;
+        }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
         if let WindowEvent::MouseInput { state, button, .. } = &mut event
