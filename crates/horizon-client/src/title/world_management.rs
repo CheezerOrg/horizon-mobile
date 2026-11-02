@@ -118,6 +118,10 @@ pub fn backups_path(saves: &Path) -> PathBuf {
 pub(super) fn open_folder(path: &Path) -> crate::Result<()> {
     fs::create_dir_all(path)?;
     let path = fs::canonicalize(path)?;
+    // ios-port: no desktop opener to spawn: the platform opens it.
+    if crate::system_open::open_folder(&path) {
+        return Ok(());
+    }
     let program = if cfg!(target_os = "windows") {
         "explorer"
     } else if cfg!(target_os = "macos") {

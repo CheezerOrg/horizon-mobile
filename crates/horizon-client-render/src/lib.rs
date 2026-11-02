@@ -141,6 +141,7 @@ pub mod sprites;
 pub mod streaming;
 pub mod structure_block;
 pub mod studio_ui;
+pub mod system_open; // ios-port: folders and links opened by the platform
 pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;

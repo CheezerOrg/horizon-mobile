@@ -35,7 +35,15 @@ microsoft.com/link in Safari with the code on the clipboard. The game keeps the 
 token in the Keychain and signs in again at every start; Sign Out deletes it. Without a client ID
 the page is hidden and the game plays offline, as before.
 
-The game keeps its worlds, options and logs in the app's `Library/Application Support/horizon`;
-on the simulator: `xcrun simctl get_app_container booted <bundle id> data`.
+## Resource packs, shader packs and worlds
+
+The game folder is the app's Documents, which the Files app shows as On My iPhone › Horizon:
+put a resource pack's `.zip` (or folder) in `resourcepacks`, a shader pack in `shaderpacks` and a
+world folder in `saves`, from the Files app, AirDrop (Save to Files), Safari's downloads or a Mac
+(Finder › the device › Files › Horizon). Open Pack Folder on the Resource Packs and Shader Packs
+screens opens that folder in the Files app; back in the game the list shows what was added.
+Builds before this one kept the game in `Library/Application Support/horizon`; the first start
+moves it to Documents. On the simulator the folder is in
+`xcrun simctl get_app_container booted <bundle id> data`.
 
 Merging upstream: [MERGING.md](MERGING.md).

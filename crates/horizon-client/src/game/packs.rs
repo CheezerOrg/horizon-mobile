@@ -35,6 +35,10 @@ mod folder;
 
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 pub fn open_folder(dir: &Path) {
+    // ios-port: no desktop opener to spawn: the platform opens it.
+    if horizon_client::system_open::open_folder(dir) {
+        return;
+    }
     if let Err(e) = folder::command(dir).and_then(|mut command| command.spawn()) {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
@@ -48,8 +52,11 @@ pub fn open_uri(uri: &str) {
     if let Err(error) = open::that_detached(uri) {
         log::warn!("Horizon: could not open URI {uri}: {error}");
     }
+    // ios-port:
     #[cfg(not(windows))]
-    open_folder(Path::new(uri));
+    if !horizon_client::system_open::open_uri(uri) {
+        open_folder(Path::new(uri));
+    }
 }
 /// The resource root to load from: the selection and a server's packs, which go on top
 /// (`Pack.Position.TOP`, fixed), laid over `base`. `base` is the mods' content root

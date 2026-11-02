@@ -33,6 +33,11 @@ git fetch upstream && git checkout ios && git merge upstream/main
   fork-only `crates/horizon-client-render/src/msa.rs` (a port of `launcher/src/account.rs`'s
   device-code sign-in: if upstream changes those requests, follow them there), re-exported in
   `client_lib.rs`; `ios/src/account.rs` gives it the Keychain and Safari.
+- **Folders and links opened by the platform** (`// ios-port:`): `packs::open_folder` and
+  `open_uri` in `game/packs.rs` and `world_management::open_folder` ask the fork-only
+  `crates/horizon-client-render/src/system_open.rs` (re-exported in `client_lib.rs`) first, which
+  `ios/src/open.rs` points at the Files app and Safari. A new opener upstream adds (a
+  `Command::new("open")`) needs the same check.
 - **Fork-only files**: `crates/horizon-client-input/src/touch.rs` (the gestures and
   `TouchSettings`, unit-tested) and `crates/horizon-client/src/game/touch.rs` (the game side).
   Upstream never touches them. `gamepad::length` was made `pub` for them.
