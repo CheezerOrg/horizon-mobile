@@ -213,10 +213,13 @@ impl Inner {
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
         let scale_factor = self.scale_factor();
-        let safe_area = self.safe_area_screen_space();
+        // horizon-ios: the view's size, as `Resized` reports it and the Metal layer covers. The
+        // safe area (winit's) is smaller: a surface made at it was stretched over the screen.
+        let screen_space = self.window.screen().coordinateSpace();
+        let view_frame = self.view.convertRect_toCoordinateSpace(self.view.bounds(), &screen_space);
         let size = LogicalSize {
-            width: safe_area.size.width as f64,
-            height: safe_area.size.height as f64,
+            width: view_frame.size.width as f64,
+            height: view_frame.size.height as f64,
         };
         size.to_physical(scale_factor)
     }

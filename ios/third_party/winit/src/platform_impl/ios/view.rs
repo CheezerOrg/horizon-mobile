@@ -85,7 +85,8 @@ declare_class!(
             let screen = window.screen();
             let screen_space = screen.coordinateSpace();
             let screen_frame = self.convertRect_toCoordinateSpace(window_bounds, &screen_space);
-            let scale_factor = screen.scale();
+            // horizon-ios: the view's own scale, the one `inner_size` and the Metal layer use.
+            let scale_factor = self.contentScaleFactor();
             let size = crate::dpi::LogicalSize {
                 width: screen_frame.size.width as f64,
                 height: screen_frame.size.height as f64,
