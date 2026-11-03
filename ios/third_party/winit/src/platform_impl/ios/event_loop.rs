@@ -193,18 +193,14 @@ impl<T: 'static> EventLoop<T> {
             &objc2_foundation::NSString::from_str("UISceneWillConnectNotification"),
             move |notification| {
                 let Some(scene) = (unsafe { notification.object() }) else { return };
-                let app = UIApplication::sharedApplication(mtm);
-                #[allow(deprecated)]
-                for window in app.windows() {
-                    let ours: bool = unsafe {
-                        objc2::msg_send![&window, isKindOfClass: super::window::WinitUIWindow::class()]
-                    };
-                    if ours {
-                        super::window::attach_to_scene(mtm, &window, Some(&scene));
-                        window.makeKeyAndVisible();
-                    }
-                }
+                super::window::attach_windows(mtm, Some(&scene));
             },
+        );
+        // horizon-ios: and once it is active, any window still in no scene goes in the connected one.
+        let _scene_did_activate_observer = create_observer(
+            &center,
+            &objc2_foundation::NSString::from_str("UISceneDidActivateNotification"),
+            move |_| super::window::attach_windows(mtm, None),
         );
         let _did_become_active_observer = create_observer(
             &center,

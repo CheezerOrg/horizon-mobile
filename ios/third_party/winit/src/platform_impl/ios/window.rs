@@ -101,6 +101,33 @@ pub(crate) fn attach_to_scene(mtm: MainThreadMarker, window: &UIWindow, scene: O
     }
 }
 
+// horizon-ios: winit's own windows, found here when the scene connects. `UIApplication.windows`
+// lists only windows already in a connected scene, so a window made before the scene was missing
+// from it and never shown: a black screen while the game ran (after a launch fast enough to make
+// its window first).
+thread_local! {
+    static WINDOWS: std::cell::RefCell<Vec<objc2::rc::Weak<WinitUIWindow>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Puts winit's windows in `scene` (or the connected one) and shows them: all of them when a
+/// scene is given, else those in no scene yet.
+pub(crate) fn attach_windows(mtm: MainThreadMarker, scene: Option<&AnyObject>) {
+    let windows: Vec<Retained<WinitUIWindow>> = WINDOWS.with(|windows| {
+        let mut windows = windows.borrow_mut();
+        windows.retain(|window| window.load().is_some());
+        windows.iter().filter_map(|window| window.load()).collect()
+    });
+    for window in windows {
+        let current: *mut AnyObject = unsafe { msg_send![&window, windowScene] };
+        let in_scene = !current.is_null();
+        if scene.is_some() || !in_scene {
+            attach_to_scene(mtm, &window, scene);
+            window.makeKeyAndVisible();
+        }
+    }
+}
+
 impl WinitUIWindow {
     pub(crate) fn new(
         mtm: MainThreadMarker,
@@ -109,6 +136,7 @@ impl WinitUIWindow {
         view_controller: &UIViewController,
     ) -> Retained<Self> {
         let this: Retained<Self> = unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] };
+        WINDOWS.with(|windows| windows.borrow_mut().push(objc2::rc::Weak::from_retained(&this)));
 
         this.setRootViewController(Some(view_controller));
 

@@ -67,7 +67,7 @@ opens the settings. Run the game from a scratch working directory: it writes `op
 
 winit 0.30.13 with these iOS changes, each marked `horizon-ios:` (`git grep -n "horizon-ios:" ios/third_party`):
 the UIScene life cycle UIKit requires of apps built with current SDKs (windows join the app's
-`UIWindowScene`), windows that always fill the screen, `inner_size` as the view's whole size (what
+`UIWindowScene` from winit's own list of them, made before the scene connects or after), windows that always fill the screen, `inner_size` as the view's whole size (what
 `Resized` reports and the Metal layer covers, not the safe area), and typing with the on-screen keyboard:
 Return is the Enter key, no autocapitals, corrections or smart quotes (they would break commands),
 and the view shrinks to end where the keyboard begins, so the text box stays in sight. winit
