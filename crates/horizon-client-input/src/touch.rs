@@ -21,6 +21,9 @@ use std::{
 
 /// Held still this long, a finger right clicks in menus.
 pub const LONG_PRESS: Duration = Duration::from_millis(450);
+/// Held still this long on the view, a finger holds the use key (attack
+/// when facing a block), as Bedrock Edition's touch controls do.
+pub const LOOK_HOLD: Duration = Duration::from_millis(300);
 /// Held this long on a hotbar slot, a finger drops the slot's item.
 pub const HOLD_DROP: Duration = Duration::from_millis(500);
 /// The game samples input once per tick: a timed press's release waits this
@@ -465,6 +468,16 @@ enum MenuState {
 }
 
 #[derive(Clone, Copy, Debug)]
+enum LookState {
+    /// Not yet a tap, a hold or a drag.
+    Pending,
+    /// It moved before it was held: it only turns the view.
+    Dragging,
+    /// The hold presses this control until the finger lifts.
+    Holding(Control),
+}
+
+#[derive(Clone, Copy, Debug)]
 enum Role {
     Button(Control),
     Hotbar {
@@ -475,8 +488,13 @@ enum Role {
         origin: [f32; 2],
         radius: f32,
     },
-    /// Turns the view.
-    Look,
+    /// Turns the view; tapped it attacks, held it uses (the other way round
+    /// facing a block).
+    Look {
+        start: [f32; 2],
+        since: Instant,
+        state: LookState,
+    },
     Menu {
         start: [f32; 2],
         since: Instant,
@@ -516,6 +534,8 @@ pub struct TouchInput {
     sprinting: bool,
     /// Releases of taps, held back until the time given.
     late: Vec<(Control, Instant)>,
+    /// The crosshair is on a block (not an entity, not the air).
+    facing_block: bool,
 }
 
 impl TouchInput {
@@ -529,7 +549,11 @@ impl TouchInput {
         self.mode = Some(mode);
         for finger in &mut self.fingers {
             match finger.role {
-                Role::Button(c) => self.out.push(Output::Release(c)),
+                Role::Button(c)
+                | Role::Look {
+                    state: LookState::Holding(c),
+                    ..
+                } => self.out.push(Output::Release(c)),
                 Role::Menu {
                     state: MenuState::Dragging,
                     ..
@@ -548,6 +572,26 @@ impl TouchInput {
             self.out.push(Output::Release(control));
         }
         self.look = [0.0, 0.0];
+    }
+
+    /// Whether the crosshair is on a block, for what the view finger's tap
+    /// and hold do: tapped it uses and held it attacks (mines) there.
+    pub fn set_facing_block(&mut self, facing: bool) {
+        self.facing_block = facing;
+    }
+
+    /// A view finger is still to become a tap or a hold: the game should
+    /// tell `set_facing_block` before the next `event` or `frame`.
+    pub fn deciding(&self) -> bool {
+        self.fingers.iter().any(|f| {
+            matches!(
+                f.role,
+                Role::Look {
+                    state: LookState::Pending,
+                    ..
+                }
+            )
+        })
     }
 
     /// A touch from the window, at `pos` in GUI pixels.
@@ -575,7 +619,7 @@ impl TouchInput {
     fn play_role(&mut self, pos: [f32; 2], now: Instant, layout: &Layout) -> Role {
         let taken = |f: &Finger, stick: bool| match f.role {
             Role::Stick { .. } => stick,
-            Role::Look => !stick,
+            Role::Look { .. } => !stick,
             _ => false,
         };
         if let Some(control) = layout.button_at(pos, Mode::Play) {
@@ -607,7 +651,11 @@ impl TouchInput {
         } else if self.fingers.iter().any(|f| taken(f, false)) {
             Role::Ignored
         } else {
-            Role::Look
+            Role::Look {
+                start: pos,
+                since: now,
+                state: LookState::Pending,
+            }
         }
     }
 
@@ -677,9 +725,12 @@ impl TouchInput {
                     origin[1] += (pos[1] - origin[1]) * k;
                 }
             }
-            Role::Look => {
+            Role::Look { start, state, .. } => {
                 self.look[0] += pos[0] - old[0];
                 self.look[1] += pos[1] - old[1];
+                if matches!(state, LookState::Pending) && distance(pos, *start) > layout.slop() {
+                    *state = LookState::Dragging;
+                }
             }
             Role::Menu { start, state, .. } => match state {
                 MenuState::Pending if distance(pos, *start) > layout.slop() => {
@@ -717,7 +768,23 @@ impl TouchInput {
         };
         let finger = self.fingers.remove(i);
         match finger.role {
-            Role::Button(control) => self.out.push(Output::Release(control)),
+            Role::Button(control)
+            | Role::Look {
+                state: LookState::Holding(control),
+                ..
+            } => self.out.push(Output::Release(control)),
+            Role::Look {
+                state: LookState::Pending,
+                ..
+            } if !cancelled => {
+                let control = if self.facing_block {
+                    Control::Use
+                } else {
+                    Control::Attack
+                };
+                self.out.push(Output::Press(control));
+                self.late.push((control, now + TAP_HOLD));
+            }
             Role::Menu { start, state, .. } => match state {
                 MenuState::Pending if !cancelled => {
                     self.out.push(Output::PointerPress(Button::Left, start));
@@ -754,6 +821,18 @@ impl TouchInput {
                     *dropped = true;
                     self.out.push(Output::Press(Control::Drop));
                     self.late.push((Control::Drop, now + TAP_HOLD));
+                }
+                Role::Look { since, state, .. }
+                    if matches!(state, LookState::Pending)
+                        && now.duration_since(*since) >= LOOK_HOLD =>
+                {
+                    let control = if self.facing_block {
+                        Control::Attack
+                    } else {
+                        Control::Use
+                    };
+                    self.out.push(Output::Press(control));
+                    *state = LookState::Holding(control);
                 }
                 Role::Menu {
                     start,
@@ -1199,18 +1278,48 @@ mod tests {
     }
 
     #[test]
-    fn a_finger_on_the_view_only_turns_it_tapped_held_or_dragged() {
+    fn tapping_the_view_attacks_and_holding_it_uses_then_turns_it_while_held() {
         let mut rig = Rig::new(PLAY);
-        // A tap, then a long hold that drags.
         rig.touch(1, Phase::Started, [400.0, 100.0], 0);
         rig.touch(1, Phase::Ended, [400.0, 100.0], 100);
-        assert_eq!(rig.frame(200), []);
+        assert_eq!(rig.frame(100), [Output::Press(Control::Attack)]);
+        assert_eq!(rig.frame(200), [Output::Release(Control::Attack)]);
         rig.touch(2, Phase::Started, [400.0, 100.0], 300);
-        assert_eq!(rig.frame(1500), []);
-        rig.touch(2, Phase::Moved, [430.0, 100.0], 1600);
+        assert_eq!(rig.frame(500), []);
+        assert_eq!(rig.frame(700), [Output::Press(Control::Use)]);
+        rig.touch(2, Phase::Moved, [430.0, 100.0], 800);
         assert_eq!(rig.input.take_look(), [30.0, 0.0]);
-        rig.touch(2, Phase::Ended, [430.0, 100.0], 1700);
-        assert_eq!(rig.frame(1700), []);
+        rig.touch(2, Phase::Ended, [430.0, 100.0], 900);
+        assert_eq!(rig.frame(900), [Output::Release(Control::Use)]);
+    }
+
+    #[test]
+    fn facing_a_block_a_tap_on_the_view_uses_and_a_hold_attacks() {
+        let mut rig = Rig::new(PLAY);
+        rig.input.set_facing_block(true);
+        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
+        assert!(rig.input.deciding());
+        rig.touch(1, Phase::Ended, [400.0, 100.0], 100);
+        assert_eq!(
+            rig.frame(200),
+            [Output::Press(Control::Use), Output::Release(Control::Use)]
+        );
+        rig.touch(2, Phase::Started, [400.0, 100.0], 300);
+        assert_eq!(rig.frame(700), [Output::Press(Control::Attack)]);
+        assert!(!rig.input.deciding());
+        rig.input.set_mode(MENU);
+        assert_eq!(rig.input.take(), [Output::Release(Control::Attack)]);
+    }
+
+    #[test]
+    fn a_drag_on_the_view_only_turns_it() {
+        let mut rig = Rig::new(PLAY);
+        rig.touch(1, Phase::Started, [400.0, 100.0], 0);
+        rig.touch(1, Phase::Moved, [460.0, 120.0], 50);
+        assert_eq!(rig.frame(1000), []);
+        assert_eq!(rig.input.take_look(), [60.0, 20.0]);
+        rig.touch(1, Phase::Ended, [460.0, 120.0], 1100);
+        assert_eq!(rig.frame(1200), []);
     }
 
     #[test]

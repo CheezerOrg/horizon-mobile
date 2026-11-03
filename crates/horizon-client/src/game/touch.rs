@@ -1,6 +1,7 @@
 //! Touch controls on the window (the iOS port; the gestures are in
 //! `horizon_client_input::touch`). While playing, the stick moves the player
-//! as a pad's left stick does, the view finger turns it as mouse motion,
+//! as a pad's left stick does, the view finger turns it as mouse motion
+//! (tapped it attacks and held it uses, the other way round facing a block),
 //! and the buttons act as the vanilla key mappings they stand for. Over
 //! menus the fingers make the mouse's window events. On by default on iOS
 //! only; `HORIZON_TOUCH=1` turns it on elsewhere (a touchscreen). The Touch
@@ -107,6 +108,7 @@ impl Game<'_> {
         self.last_input = Instant::now();
         let mode = self.touch_mode();
         self.touch.input.set_mode(mode);
+        self.touch_facing();
         self.touch
             .input
             .event(touch.id, phase, pos, Instant::now(), &layout);
@@ -171,8 +173,19 @@ impl Game<'_> {
             return;
         };
         self.touch.input.set_mode(self.touch_mode());
+        self.touch_facing();
         self.touch.input.frame(Instant::now());
         self.touch_apply(event_loop, scale);
+    }
+
+    /// While a view finger is still to be a tap or a hold: whether the
+    /// crosshair is on a block (`Minecraft.hitResult` a `BlockHitResult`),
+    /// where a tap uses and a hold mines instead.
+    fn touch_facing(&mut self) {
+        if self.touch.input.deciding() {
+            let facing = self.pick_entity_hit().is_none() && self.pick().is_some();
+            self.touch.input.set_facing_block(facing);
+        }
     }
 
     /// The touch stick's move vector while playing, as `pad_move` gives a pad's.
