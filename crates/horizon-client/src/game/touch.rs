@@ -8,10 +8,12 @@
 //! (`TouchSettings`, in `settings.controller.touch`). They are drawn with
 //! Bedrock Edition's own textures when the resources have them
 //! (`textures/gui/bedrock`, which `ios/bedrock_controls.sh` downloads: Mojang's
-//! files, never in the repository), and as plain shapes otherwise.
+//! files, never in the repository), and as plain shapes otherwise. While the
+//! resources still load, the startup menu's title takes taps the same way
+//! (`Loading`), before `Game` exists.
 use super::event_loop::EventLoopCtl;
 use super::input_trace::InputOrigin;
-use super::{Game, Screen};
+use super::{Game, Loading, Screen};
 use horizon_client::held::Source;
 use horizon_client::{
     Result,
@@ -97,12 +99,7 @@ impl Game<'_> {
         let Some((layout, scale)) = self.touch_layout() else {
             return true;
         };
-        let phase = match touch.phase {
-            TouchPhase::Started => Phase::Started,
-            TouchPhase::Moved => Phase::Moved,
-            TouchPhase::Ended => Phase::Ended,
-            TouchPhase::Cancelled => Phase::Cancelled,
-        };
+        let phase = phase(touch.phase);
         let pos = [
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
@@ -410,6 +407,116 @@ impl Game<'_> {
             }
             Mode::Menu { back: false } => {}
         }
+    }
+}
+
+impl Loading {
+    /// `WindowEvent::Touch` on the startup menu's title; true when the touch
+    /// controls took it. Its taps, drags and scrolls reach `menu_event` as
+    /// the mouse's events, as `Game`'s menus get them.
+    pub(super) fn touch_event(&mut self, event_loop: &dyn EventLoopCtl, touch: &Touch) -> bool {
+        if !enabled() {
+            return false;
+        }
+        let Some((layout, scale)) = self.touch_layout() else {
+            return true;
+        };
+        let pos = [
+            touch.location.x as f32 / scale,
+            touch.location.y as f32 / scale,
+        ];
+        self.touch.input.set_mode(LOADING_MODE);
+        self.touch
+            .input
+            .event(touch.id, phase(touch.phase), pos, Instant::now(), &layout);
+        self.touch_apply(event_loop, scale);
+        true
+    }
+
+    /// Once per loop iteration: long presses.
+    pub(super) fn touch_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        if !enabled() {
+            return;
+        }
+        let Some((_, scale)) = self.touch_layout() else {
+            return;
+        };
+        self.touch.input.set_mode(LOADING_MODE);
+        self.touch.input.frame(Instant::now());
+        self.touch_apply(event_loop, scale);
+    }
+
+    fn touch_layout(&self) -> Option<(Layout, f32)> {
+        let r = self.renderer.as_ref()?;
+        let batch = HudBatch::new([r.config.width, r.config.height]);
+        let layout = Layout {
+            width: batch.width,
+            height: batch.height,
+            unit: JUMP_SIDE * batch.height * self.settings.controller.touch.scale(),
+            inset: 0.0,
+            left_handed: false,
+            minimal: false,
+            flying: false,
+        };
+        Some((layout, batch.scale))
+    }
+
+    fn touch_apply(&mut self, event_loop: &dyn EventLoopCtl, scale: f32) {
+        let device_id = DeviceId::dummy();
+        let at = |p: [f32; 2]| WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(f64::from(p[0] * scale), f64::from(p[1] * scale)),
+        };
+        let mouse = |button, state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button,
+        };
+        let left = MouseButton::Left;
+        for out in self.touch.input.take() {
+            let events = match out {
+                Output::PointerMove(p) => vec![at(p)],
+                Output::PointerPress(b, p) => {
+                    vec![at(p), mouse(touch_button(b), ElementState::Pressed)]
+                }
+                Output::PointerRelease(b, p) => {
+                    vec![at(p), mouse(touch_button(b), ElementState::Released)]
+                }
+                // The title has nothing a Shift click changes: a plain click.
+                Output::ShiftClick(p) => vec![
+                    at(p),
+                    mouse(left, ElementState::Pressed),
+                    mouse(left, ElementState::Released),
+                ],
+                Output::Scroll(lines) => vec![WindowEvent::MouseWheel {
+                    device_id,
+                    delta: MouseScrollDelta::LineDelta(0.0, lines),
+                    phase: TouchPhase::Moved,
+                }],
+                // Menus without a back button have no controls.
+                Output::Press(_) | Output::Release(_) | Output::Hotbar(_) => vec![],
+            };
+            for event in events {
+                // As `window_event`: the menu's error ends the loading.
+                if let Err(error) = self.menu_event(event_loop, event) {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The startup menu has only the title's screens, which close themselves.
+const LOADING_MODE: Mode = Mode::Menu { back: false };
+
+fn phase(phase: TouchPhase) -> Phase {
+    match phase {
+        TouchPhase::Started => Phase::Started,
+        TouchPhase::Moved => Phase::Moved,
+        TouchPhase::Ended => Phase::Ended,
+        TouchPhase::Cancelled => Phase::Cancelled,
     }
 }
 

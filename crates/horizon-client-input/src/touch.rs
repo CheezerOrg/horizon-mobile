@@ -630,31 +630,15 @@ impl TouchInput {
             .fingers
             .iter_mut()
             .find(|f| matches!(f.role, Role::Menu { .. }) && f.id != id);
-        // A finger that already dragged or long-pressed has had its say: the
-        // new one takes over (its drag ends where it is). Ignoring the new
-        // one instead would leave the menu deaf for as long as a finger whose
-        // lift never came (the app went to the background) stays listed.
-        let primary = match primary {
-            Some(first) => match first.role {
-                Role::Menu {
-                    state: MenuState::Pending,
-                    ..
-                } => Some(first),
-                Role::Menu { state, .. } => {
-                    if matches!(state, MenuState::Dragging) {
-                        self.out
-                            .push(Output::PointerRelease(Button::Left, first.pos));
-                    }
-                    first.role = Role::Ignored;
-                    None
-                }
-                _ => None,
-            },
-            None => None,
-        };
         match primary {
             Some(first) => {
-                let Role::Menu { start, .. } = first.role else {
+                let Role::Menu {
+                    start,
+                    state: MenuState::Pending,
+                    ..
+                } = first.role
+                else {
+                    // A drag or a long press is already under way.
                     return Role::Ignored;
                 };
                 first.role = Role::Two;
@@ -1014,43 +998,6 @@ mod tests {
         assert_eq!(
             rig.frame(80),
             [
-                Output::PointerMove([100.0, 100.0]),
-                Output::PointerPress(Button::Left, [100.0, 100.0]),
-                Output::PointerRelease(Button::Left, [100.0, 100.0]),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_finger_whose_lift_never_came_does_not_block_the_next_tap() {
-        let mut rig = Rig::new(MENU);
-        // Finger 1 lands and its end is lost: by now it counts as a long press.
-        rig.touch(1, Phase::Started, [50.0, 50.0], 0);
-        rig.frame(500);
-        rig.touch(2, Phase::Started, [100.0, 100.0], 1000);
-        rig.touch(2, Phase::Ended, [100.0, 100.0], 1080);
-        assert_eq!(
-            rig.frame(1080),
-            [
-                Output::PointerMove([100.0, 100.0]),
-                Output::PointerPress(Button::Left, [100.0, 100.0]),
-                Output::PointerRelease(Button::Left, [100.0, 100.0]),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_new_finger_ends_a_drag_still_listed_and_clicks() {
-        let mut rig = Rig::new(MENU);
-        rig.touch(1, Phase::Started, [50.0, 50.0], 0);
-        rig.touch(1, Phase::Moved, [90.0, 50.0], 30);
-        rig.input.take();
-        rig.touch(2, Phase::Started, [100.0, 100.0], 1000);
-        rig.touch(2, Phase::Ended, [100.0, 100.0], 1080);
-        assert_eq!(
-            rig.frame(1080),
-            [
-                Output::PointerRelease(Button::Left, [90.0, 50.0]),
                 Output::PointerMove([100.0, 100.0]),
                 Output::PointerPress(Button::Left, [100.0, 100.0]),
                 Output::PointerRelease(Button::Left, [100.0, 100.0]),

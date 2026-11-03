@@ -69,6 +69,8 @@ pub(super) struct Loading {
     pub(super) ui_at: Option<Instant>,
     pub(super) title_drawn: bool,
     pub(super) menu: startup_menu::StartupMenu,
+    // ios-port: touches on the title while the game loads.
+    pub(super) touch: super::touch::Touches,
     pub(super) error: Option<Box<dyn std::error::Error>>,
 }
 /// How long the handoff waits for the first title frame before building the
@@ -186,6 +188,12 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        // ios-port: touch controls.
+        if let WindowEvent::Touch(touch) = &event
+            && self.touch_event(event_loop, touch)
+        {
+            return;
+        }
         follow_keymap(&mut event);
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
@@ -248,6 +256,7 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        self.touch_frame(event_loop); // ios-port: touch controls.
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();

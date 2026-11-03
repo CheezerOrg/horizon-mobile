@@ -1409,6 +1409,8 @@ mod tests {
             ui_at: None,
             title_drawn: false,
             menu: StartupMenu::default(),
+            touch: Default::default(),
+            touch: Default::default(),
             error: None,
         }
     }

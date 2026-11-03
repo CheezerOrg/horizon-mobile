@@ -9867,6 +9867,18 @@ impl Game<'_> {
     /// it a handler both can call and a `gamepad::Route` (screenshot and fullscreen do this). A
     /// screen's own raw keys, text and mods' key hooks stay raw on purpose.
     fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
+        // ios-port: touch controls.
+        if let WindowEvent::Touch(touch) = &event
+            && self.touch_event(event_loop, touch)
+        {
+            return;
+        }
+        // ios-port: touch controls.
+        if let WindowEvent::Touch(touch) = &event
+            && self.touch_event(event_loop, touch)
+        {
+            return;
+        }
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
             self.physical_buttons.clear();

@@ -295,6 +295,7 @@ pub(super) fn run_loading(
         ui_at: None,
         title_drawn: false,
         menu,
+        touch: Default::default(),
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
