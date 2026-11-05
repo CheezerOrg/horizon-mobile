@@ -1,32 +1,62 @@
-<p align="center">
-  <img src="docs/media/banner.webp" alt="The Horizon website: the game you know, rebuilt in Rust" width="100%">
-</p>
+# Horizon Mobile
+
+**Horizon on iPhone and iPad.** This fork of [Horizon](https://github.com/horizon-rust/horizon), Minecraft: Java Edition 26.3 rewritten in Rust, adds a native iOS app with touch controls. You play the Java Edition game, with its worlds, servers, redstone and resource packs, on your phone or tablet.
 
 <p align="center">
-  <a href="https://github.com/horizon-rust/horizon/actions/workflows/ci.yml"><img src="https://github.com/horizon-rust/horizon/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <img src="https://img.shields.io/badge/platform-iOS%20%7C%20iPadOS-2A2470?logo=apple&logoColor=white" alt="iOS and iPadOS">
   <img src="https://img.shields.io/badge/Minecraft-Java%2026.3-5D9C3F" alt="Minecraft Java 26.3">
+  <img src="https://img.shields.io/badge/GPU-Metal-555555" alt="Metal">
   <img src="https://img.shields.io/badge/Rust-stable-B7410E?logo=rust&logoColor=white" alt="Rust">
-  <img src="https://img.shields.io/badge/vanilla%20parity-100%25-F0795A" alt="Vanilla parity 100%">
-  <a href="#project-status"><img src="https://img.shields.io/badge/player--visible%20gaps-0%20open-F0795A" alt="Player-visible gaps open"></a>
-  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-2A2470" alt="Linux, macOS and Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3B2F7E" alt="MIT license"></a>
 </p>
 
 <p align="center">
-  <a href="https://playhorizon.dev"><b>Website</b></a> ·
-  <a href="#download"><b>Download</b></a> ·
-  <a href="https://playhorizon.dev/docs/"><b>Documentation</b></a> ·
-  <a href="https://github.com/horizon-rust/horizon/releases"><b>Release notes</b></a> ·
-  <a href="ROADMAP.md"><b>Roadmap</b></a> ·
-  <a href="#project-status"><b>Project status</b></a> ·
-  <a href="#contributing"><b>Contributing</b></a>
+  <a href="#build-the-ios-app"><b>Build the app</b></a> ·
+  <a href="ios/README.md"><b>iOS guide</b></a> ·
+  <a href="ios/UPSTREAM.md"><b>Staying on upstream</b></a> ·
+  <a href="#horizon-upstream"><b>Upstream Horizon</b></a>
 </p>
 
-# Horizon
+> Not an official Minecraft product, nor approved by or associated with Mojang or Microsoft. The app bundles game resources prepared from **your own** copy of Java Edition 26.3: build it for your own devices only, and never share the app or what it is built from.
 
-Minecraft: Java Edition 26.3, rewritten in Rust. Same worlds, same rules, same terrain, checked against the Java game by more than 300 differential harnesses. Free, open source and unofficial.
+## What this fork adds
 
-> Not an official Minecraft product, nor approved by or associated with Mojang or Microsoft. Horizon contains no Minecraft code, assets or data: you need your own copy of Java Edition 26.3.
+- **A native iPhone and iPad app.** It runs full screen on Metal, with the iOS scene life cycle handled through a patched winit. It also runs in the iOS simulator.
+- **Touch controls in Bedrock Edition's layout**, drawn with Bedrock's own control textures: a movement stick, jump, sneak and sprint. Tap the view to attack or mine and hold it to use; facing a block, it works the other way round. A **Touch Controls** settings page lets you adjust them.
+- **The on-screen keyboard** types in chat, on signs and in search fields such as the settings search.
+- **A hardware keyboard, mouse or trackpad.** The touch controls hide while you play with them, and mouse buttons work whether or not the pointer is locked.
+- **Microsoft account sign-in in the game** (Options › Horizon Settings › Microsoft Account), so you can join online-mode servers. The token stays in the Keychain, and Minecraft SRV records resolve through the system resolver.
+- **Your files in the Files app.** The game folder appears as On My iPhone › Horizon: add resource packs, shader packs and worlds from the Files app, AirDrop, Safari or a Mac.
+- **Sideloading.** `ios/ipa.sh` builds an unsigned `.ipa` for AltStore or Sideloadly, or a signed one for your team.
+- **Everything else from Horizon:** vanilla world generation, mobs, redstone, commands, multiplayer, packs and native mods. The port is kept as a short series of commits rebased onto upstream ([how](ios/UPSTREAM.md)).
+
+## Build the iOS app
+
+You need a Mac with Xcode, Rust and a Microsoft account that owns Java Edition.
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+brew install xcodegen
+ios/prepare_resources.sh                         # signs in, downloads and prepares Minecraft 26.3
+cp ios/Local.xcconfig.example ios/Local.xcconfig # then set your team and bundle id
+ios/run.sh                                       # the booted simulator
+ios/run.sh device                                # the connected iPhone or iPad
+ios/ipa.sh                                       # an unsigned .ipa in ios/build/Horizon.ipa
+```
+
+Signing in, packs and worlds, and the build in Xcode: [ios/README.md](ios/README.md).
+
+---
+
+# Horizon (upstream)
+
+<p align="center">
+  <img src="docs/media/banner.webp" alt="The Horizon website: the game you know, rebuilt in Rust" width="100%">
+</p>
+
+The rest of this page is upstream Horizon's README. It covers the desktop game, the launcher and the project as a whole.
+
+Minecraft: Java Edition 26.3, rewritten in Rust. Same worlds, same rules, same terrain, checked against the Java game by more than 300 differential harnesses. Free, open source and unofficial. [Website](https://playhorizon.dev) · [Documentation](https://playhorizon.dev/docs/) · [Roadmap](ROADMAP.md) · [Discord](https://discord.gg/playhorizon).
 
 ## Download
 
