@@ -78,7 +78,7 @@ and the view shrinks to end where the keyboard begins, so the text box stays in 
 or trackpad (`input.rs`): `UIPress`es become `KeyboardInput` with the key's HID place (repeated while held), to the view
 while a text box has focus and to the view controller otherwise; the pointer's indirect touches, hovering and scrolling
 become the mouse's window events; `set_cursor_grab` locks the pointer (`prefersPointerLocked`), and `GCMouse` gives
-`DeviceEvent::MouseMotion` always and the buttons and wheel while locked. winit
+`DeviceEvent::MouseMotion` and the buttons always, and the wheel while locked. winit
 itself shows the keyboard while the game allows an input method (`set_ime_allowed`, which the game
 turns on while a text box has focus). It applies only to the ios/ workspace.
 When upstream moves to another winit, port these changes to that version (or drop them once winit

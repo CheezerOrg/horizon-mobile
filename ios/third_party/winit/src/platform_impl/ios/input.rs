@@ -2,10 +2,12 @@
 //!
 //! Keys come as `UIPress`es to the first responder: the view while the game allows an input
 //! method (`set_ime_allowed`), its view controller otherwise. UIKit repeats no key, so a held key
-//! repeats here, as a desktop's would. The pointer comes as UIKit's indirect touches (buttons),
-//! hovering and scrolling while it is free; while it is locked (`set_cursor_grab`) UIKit sends
-//! none of that, and GameController's `GCMouse` gives the buttons and the wheel. `GCMouse` gives
-//! the mouse's own motion always, as `DeviceEvent::MouseMotion`.
+//! repeats here, as a desktop's would. The pointer's place comes as UIKit's indirect touches and
+//! hovering, and its scrolling as a scroll gesture, while it is free; while it is locked
+//! (`set_cursor_grab`) UIKit sends none of that, and GameController's `GCMouse` gives the wheel.
+//! `GCMouse` gives the mouse's own motion as `DeviceEvent::MouseMotion`, and its buttons (an
+//! iPhone, which locks no pointer, has them only there); with no `GCMouse` (a trackpad UIKit has
+//! but GameController hasn't), the indirect touches do.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -427,7 +429,14 @@ fn button(mask: isize) -> MouseButton {
     }
 }
 
-/// A touch of the pointer (`UITouchType::IndirectPointer`): the cursor and a button.
+/// Whether GameController has a mouse, which then gives the buttons.
+fn mouse_connected() -> bool {
+    let mice: Retained<NSArray<AnyObject>> = unsafe { msg_send_id![class!(GCMouse), mice] };
+    !mice.is_empty()
+}
+
+/// A touch of the pointer (`UITouchType::IndirectPointer`): the cursor, and a button when
+/// GameController has no mouse to give it.
 pub(crate) fn pointer_touch(
     mtm: MainThreadMarker,
     id: u64,
@@ -439,7 +448,7 @@ pub(crate) fn pointer_touch(
         device_id: DEVICE_ID,
         position,
     }];
-    if !pointer_locked() {
+    if !pointer_locked() && !mouse_connected() {
         match phase {
             TouchPhase::Started => {
                 let button = button(button_mask);
@@ -576,14 +585,12 @@ fn follow_mouse(mouse: &AnyObject) {
             let Some(mtm) = MainThreadMarker::new() else {
                 return;
             };
-            if pointer_locked() {
-                let state = if pressed.as_bool() {
-                    ElementState::Pressed
-                } else {
-                    ElementState::Released
-                };
-                send(mtm, [mouse_input(state, button)]);
-            }
+            let state = if pressed.as_bool() {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            };
+            send(mtm, [mouse_input(state, button)]);
         });
         let _: () = unsafe { msg_send![&input_button, setPressedChangedHandler: &*changed] };
     }
