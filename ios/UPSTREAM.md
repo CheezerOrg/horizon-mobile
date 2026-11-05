@@ -1,11 +1,17 @@
-# Keeping the iOS port merged with upstream
+# Keeping the iOS port on top of upstream
 
 The port lives on the fork's `ios` branch; `main` mirrors horizon-rust/horizon. Bring upstream in
-with a merge (not a rebase), so each conflict is resolved once:
+with a rebase, so the port stays a short series of commits on top of upstream's history:
 
 ```sh
-git fetch upstream && git checkout ios && git merge upstream/main
+git config rerere.enabled true   # once: a conflict resolved before is reapplied on the next rebase
+git fetch upstream && git checkout ios && git rebase upstream/main
+git push --force-with-lease origin ios
 ```
+
+A fix the rebase needs (an upstream signature that changed under a port commit, say) belongs in the
+commit it repairs: `git commit --fixup=<that commit>`, then `git rebase -i --autosquash upstream/main`,
+rather than a new commit on top each time.
 
 ## What the port changes outside `ios/`
 
@@ -16,7 +22,7 @@ git fetch upstream && git checkout ios && git merge upstream/main
   `resident_bytes`, `learn_layout`, the open-file limit). They are correct for desktop too and are
   meant for upstream PRs; once one is merged upstream it stops differing here.
 - **`// ios-port:` hooks**: the few lines in upstream files the iOS app needs. List them with
-  `git grep -n "ios-port:"` after every merge and check each still sits where it should.
+  `git grep -n "ios-port:"` after every rebase and check each still sits where it should.
   Today they are the touch controls' wiring (the `touch` module and field in `game.rs`, the
   `WindowEvent::Touch` dispatch, `touch_frame` before `poll_pads`, `draw_touch` at the end of the
   HUD, the touch-held sneak and sprint spared in `heal_hold_latches`, the stick at the top of `pad_move`, the `touch` control command, `touch_note_device` in `window_event` and
@@ -57,7 +63,7 @@ Test the touch controls on the desktop: launch with `HORIZON_TOUCH=1`, then
 opens the settings. Run the game from a scratch working directory: it writes `options.txt` and
 `horizon-touch.txt` there.
 
-## After a merge
+## After a rebase
 
 1. If the root `Cargo.toml`'s `[patch.crates-io]` or `[profile.*]` changed, copy them into
    `ios/Cargo.toml` (patches apply only from the workspace that builds).

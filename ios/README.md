@@ -53,4 +53,4 @@ Builds before this one kept the game in `Library/Application Support/horizon`; t
 moves it to Documents. On the simulator the folder is in
 `xcrun simctl get_app_container booted <bundle id> data`.
 
-Merging upstream: [MERGING.md](MERGING.md).
+Rebasing onto upstream: [UPSTREAM.md](UPSTREAM.md).

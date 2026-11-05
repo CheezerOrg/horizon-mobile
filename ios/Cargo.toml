@@ -23,7 +23,7 @@ block2 = "0.6"
 [workspace]
 
 # Copied from the root Cargo.toml: patches apply only from the workspace that builds.
-# Re-copy them when upstream changes its block (MERGING.md).
+# Re-copy them when upstream changes its block (UPSTREAM.md).
 [patch.crates-io]
 wgpu-hal = { path = "../third_party/wgpu-hal" }
 naga = { path = "../third_party/naga" }
