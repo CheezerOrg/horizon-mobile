@@ -986,8 +986,11 @@ impl super::CapabilitiesQuery {
             // We only need to account for the position built-in since the others
             // are either not used or they already count towards the limit
             // calculation as specified by WebGPU.
+            // ios-port: the iOS simulator says only Apple2, but draws on the Mac's GPU, which takes
+            // Apple4's 31 (every device iOS 16 runs on is Apple4 or later).
             max_inter_stage_shader_variables: if family_check
-                && device.supportsFamily(MTLGPUFamily::Apple4)
+                && (device.supportsFamily(MTLGPUFamily::Apple4)
+                    || cfg!(all(target_os = "ios", target_abi = "sim")))
             {
                 31 // min(124, 124 / 4)
             } else if device.supportsFeatureSet(MTLFeatureSet::macOS_GPUFamily1_v1) {

@@ -9,6 +9,9 @@ git fetch upstream && git checkout ios && git merge upstream/main
 
 ## What the port changes outside `ios/`
 
+- **The simulator's inter-stage limit** (`// ios-port:` in `third_party/wgpu-hal/src/metal/adapter.rs`): the
+  iOS simulator reports only the Apple2 GPU family (15 inter-stage variables; the entity shader needs 16), but
+  draws on the Mac's GPU, so simulator builds take Apple4's 31. Re-apply it when wgpu-hal is re-vendored.
 - **Portability fixes** (Metal-only on every Apple OS, arboard gated off iOS, `data_dir`,
   `resident_bytes`, `learn_layout`, the open-file limit). They are correct for desktop too and are
   meant for upstream PRs; once one is merged upstream it stops differing here.
