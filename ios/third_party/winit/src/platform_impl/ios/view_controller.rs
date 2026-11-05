@@ -1,14 +1,16 @@
 use std::cell::Cell;
 
 use objc2::rc::Retained;
-use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{MainThreadMarker, NSObject};
+use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2_foundation::{MainThreadMarker, NSObject, NSSet};
+use objc2_ui_kit::{UIPress, UIPressesEvent};
 use objc2_ui_kit::{
     UIDevice, UIInterfaceOrientationMask, UIRectEdge, UIResponder, UIStatusBarStyle,
     UIUserInterfaceIdiom, UIView, UIViewController,
 };
 
 use super::app_state::{self};
+use crate::event::ElementState;
 use crate::platform::ios::{ScreenEdge, StatusBarStyle, ValidOrientations};
 use crate::window::WindowAttributes;
 
@@ -18,6 +20,8 @@ pub struct ViewControllerState {
     prefers_home_indicator_auto_hidden: Cell<bool>,
     supported_orientations: Cell<UIInterfaceOrientationMask>,
     preferred_screen_edges_deferring_system_gestures: Cell<UIRectEdge>,
+    // horizon-ios: the game grabs the mouse.
+    prefers_pointer_locked: Cell<bool>,
 }
 
 declare_class!(
@@ -60,6 +64,52 @@ declare_class!(
             self.ivars().supported_orientations.get()
         }
 
+        #[method(prefersPointerLocked)]
+        fn prefers_pointer_locked(&self) -> bool {
+            self.ivars().prefers_pointer_locked.get()
+        }
+
+        // horizon-ios: the first responder while no text box has focus (the view is, then), so a
+        // hardware keyboard's keys reach the game without the on-screen keyboard showing.
+        #[method(canBecomeFirstResponder)]
+        fn can_become_first_responder(&self) -> bool {
+            true
+        }
+
+        #[method(viewDidAppear:)]
+        fn view_did_appear(&self, animated: bool) {
+            let _: () = unsafe { msg_send![super(self), viewDidAppear: animated] };
+            let view_first = self.view().is_some_and(|view| unsafe { view.isFirstResponder() });
+            if !view_first {
+                unsafe { self.becomeFirstResponder() };
+            }
+        }
+
+        #[method(pressesBegan:withEvent:)]
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Pressed) {
+                let _: () = unsafe { msg_send![super(self), pressesBegan: &*rest, withEvent: event] };
+            }
+        }
+
+        #[method(pressesEnded:withEvent:)]
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Released) {
+                let _: () = unsafe { msg_send![super(self), pressesEnded: &*rest, withEvent: event] };
+            }
+        }
+
+        #[method(pressesCancelled:withEvent:)]
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Released) {
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: &*rest, withEvent: event] };
+            }
+        }
+
         #[method(preferredScreenEdgesDeferringSystemGestures)]
         fn preferred_screen_edges_deferring_system_gestures(&self) -> UIRectEdge {
             self.ivars()
@@ -70,6 +120,14 @@ declare_class!(
 );
 
 impl WinitViewController {
+    // horizon-ios: locks the pointer (and hides it) where the system allows it: a full-screen app
+    // on iPadOS 14 or later.
+    pub(crate) fn set_prefers_pointer_locked(&self, val: bool) {
+        if self.ivars().prefers_pointer_locked.replace(val) != val {
+            let _: () = unsafe { msg_send![self, setNeedsUpdateOfPrefersPointerLocked] };
+        }
+    }
+
     pub(crate) fn set_prefers_status_bar_hidden(&self, val: bool) {
         self.ivars().prefers_status_bar_hidden.set(val);
         self.setNeedsStatusBarAppearanceUpdate();
@@ -145,6 +203,7 @@ impl WinitViewController {
             prefers_home_indicator_auto_hidden: Cell::new(false),
             supported_orientations: Cell::new(UIInterfaceOrientationMask::All),
             preferred_screen_edges_deferring_system_gestures: Cell::new(UIRectEdge::empty()),
+            prefers_pointer_locked: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
 

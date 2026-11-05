@@ -16,8 +16,9 @@ git fetch upstream && git checkout ios && git merge upstream/main
   `git grep -n "ios-port:"` after every merge and check each still sits where it should.
   Today they are the touch controls' wiring (the `touch` module and field in `game.rs`, the
   `WindowEvent::Touch` dispatch, `touch_frame` before `poll_pads`, `draw_touch` at the end of the
-  HUD, the touch-held sneak and sprint spared in `heal_hold_latches`, the stick at the top of `pad_move`, the `touch` control command) and the pointer grab that is
-  the game's own on iOS (`capture`).
+  HUD, the touch-held sneak and sprint spared in `heal_hold_latches`, the stick at the top of `pad_move`, the `touch` control command, `touch_note_device` in `window_event` and
+  `touch_keyboard_mouse` in `device_event`, which hide the controls while a keyboard or mouse plays) and the pointer grab that is
+  the game's own on iOS (`capture`, which also asks winit to lock a mouse's pointer).
 - **The Touch Controls page** (`// ios-port:` too): `Opt::Touch` in `settings.rs`, one arm per
   `Opt` method in `options_ui.rs` (caption, kind, label, value, slider, cycle), `Page::Touch` (its
   title, tooltip and rows, and the buttons that open it on the Controls and Horizon Settings pages),
@@ -70,7 +71,11 @@ the UIScene life cycle UIKit requires of apps built with current SDKs (windows j
 `UIWindowScene` from winit's own list of them, made before the scene connects or after), windows that always fill the screen, `inner_size` as the view's whole size (what
 `Resized` reports and the Metal layer covers, not the safe area), and typing with the on-screen keyboard:
 Return is the Enter key, no autocapitals, corrections or smart quotes (they would break commands),
-and the view shrinks to end where the keyboard begins, so the text box stays in sight. winit
+and the view shrinks to end where the keyboard begins, so the text box stays in sight; and a hardware keyboard and a mouse
+or trackpad (`input.rs`): `UIPress`es become `KeyboardInput` with the key's HID place (repeated while held), to the view
+while a text box has focus and to the view controller otherwise; the pointer's indirect touches, hovering and scrolling
+become the mouse's window events; `set_cursor_grab` locks the pointer (`prefersPointerLocked`), and `GCMouse` gives
+`DeviceEvent::MouseMotion` always and the buttons and wheel while locked. winit
 itself shows the keyboard while the game allows an input method (`set_ime_allowed`, which the game
 turns on while a text box has focus). It applies only to the ios/ workspace.
 When upstream moves to another winit, port these changes to that version (or drop them once winit

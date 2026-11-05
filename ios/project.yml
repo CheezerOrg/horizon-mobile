@@ -47,6 +47,8 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
+      # GCMouse: a mouse's motion, and its buttons while the pointer is locked (winit's input.rs).
+      - sdk: GameController.framework
     preBuildScripts:
       - name: Rust
         script: exec "$PROJECT_DIR/build.sh"

@@ -11,7 +11,10 @@ use objc2_ui_kit::{
     UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
     UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitEnvironment, UIView,
 };
-// horizon-ios: the keyboard's traits and frame.
+// horizon-ios: the keyboard's traits and frame; key presses, hovering and scrolling.
+use objc2_ui_kit::{
+    UIHoverGestureRecognizer, UIPress, UIPressesEvent, UIScrollTypeMask,
+};
 use objc2_ui_kit::{
     UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
     UITextAutocapitalizationType, UITextAutocorrectionType, UITextSmartDashesType,
@@ -40,6 +43,10 @@ pub struct WinitViewState {
 
     // horizon-ios: how much of the window's bottom the on-screen keyboard covers, in points.
     keyboard_overlap: Cell<CGFloat>,
+    // horizon-ios: a mouse's or trackpad's scrolling, and its translation so far.
+    scroll_gesture_recognizer: RefCell<Option<Retained<UIPanGestureRecognizer>>>,
+    hover_gesture_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
+    scroll_last: Cell<CGPoint>,
 }
 
 declare_class!(
@@ -77,6 +84,7 @@ declare_class!(
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
 
             let window = self.window().unwrap();
+            super::input::set_window(mtm, RootWindowId(window.id())); // horizon-ios:
             let mut window_bounds = window.bounds();
             // horizon-ios: the view (and so the game) ends where the keyboard begins, so the text
             // box being typed in stays in sight.
@@ -163,23 +171,23 @@ declare_class!(
         }
 
         #[method(touchesBegan:withEvent:)]
-        fn touches_began(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesMoved:withEvent:)]
-        fn touches_moved(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_moved(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesEnded:withEvent:)]
-        fn touches_ended(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_ended(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesCancelled:withEvent:)]
-        fn touches_cancelled(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(pinchGesture:)]
@@ -335,6 +343,79 @@ declare_class!(
         fn can_become_first_responder(&self) -> bool {
             true
         }
+
+        // horizon-ios: a hardware keyboard's keys while the view is the first responder (a text
+        // box has focus). Taken here, they never reach `insertText`.
+        #[method(pressesBegan:withEvent:)]
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Pressed) {
+                let _: () = unsafe { msg_send![super(self), pressesBegan: &*rest, withEvent: event] };
+            }
+        }
+
+        #[method(pressesEnded:withEvent:)]
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Released) {
+                let _: () = unsafe { msg_send![super(self), pressesEnded: &*rest, withEvent: event] };
+            }
+        }
+
+        #[method(pressesCancelled:withEvent:)]
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let mtm = MainThreadMarker::from(self);
+            if let Some(rest) = super::input::presses(mtm, presses, ElementState::Released) {
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: &*rest, withEvent: event] };
+            }
+        }
+
+        // horizon-ios: the pointer over the view with no button down.
+        #[method(hoverGesture:)]
+        fn hover_gesture(&self, recognizer: &UIHoverGestureRecognizer) {
+            let phase = match recognizer.state() {
+                UIGestureRecognizerState::Began => TouchPhase::Started,
+                UIGestureRecognizerState::Changed => TouchPhase::Moved,
+                _ => TouchPhase::Ended,
+            };
+            if super::input::pointer_locked() {
+                return;
+            }
+            let location = unsafe { recognizer.locationInView(None) };
+            let position = self.physical(location);
+            super::input::hover(MainThreadMarker::from(self), phase, position);
+        }
+
+        // horizon-ios: a mouse's wheel or a trackpad's two fingers.
+        #[method(scrollGesture:)]
+        fn scroll_gesture(&self, recognizer: &UIPanGestureRecognizer) {
+            let translation = recognizer.translationInView(Some(self));
+            let (phase, last) = match recognizer.state() {
+                UIGestureRecognizerState::Began => {
+                    (TouchPhase::Started, self.ivars().scroll_last.replace(translation))
+                }
+                UIGestureRecognizerState::Changed => {
+                    (TouchPhase::Moved, self.ivars().scroll_last.replace(translation))
+                }
+                UIGestureRecognizerState::Ended => {
+                    (TouchPhase::Ended, self.ivars().scroll_last.replace(CGPoint { x: 0.0, y: 0.0 }))
+                }
+                _ => {
+                    self.ivars().scroll_last.set(CGPoint { x: 0.0, y: 0.0 });
+                    (TouchPhase::Cancelled, translation)
+                }
+            };
+            if super::input::pointer_locked() {
+                return;
+            }
+            let scale = self.contentScaleFactor() as f64;
+            let delta = PhysicalPosition::new(
+                (translation.x - last.x) as f64 * scale,
+                (translation.y - last.y) as f64 * scale,
+            );
+            super::input::scroll(MainThreadMarker::from(self), phase, delta);
+        }
     }
 
     unsafe impl NSObjectProtocol for WinitView {}
@@ -414,10 +495,14 @@ impl WinitView {
             pinch_last_delta: Cell::new(0.0),
             pan_last_delta: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
             keyboard_overlap: Cell::new(0.0),
+            scroll_gesture_recognizer: RefCell::new(None),
+            hover_gesture_recognizer: RefCell::new(None),
+            scroll_last: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
         this.setMultipleTouchEnabled(true);
+        this.follow_pointer(mtm);
 
         // horizon-ios: follow the on-screen keyboard (the observer lives as long as the app).
         let weak = objc2::rc::Weak::from_retained(&this);
@@ -464,6 +549,45 @@ impl WinitView {
         if overlap != self.ivars().keyboard_overlap.replace(overlap) {
             unsafe { self.setNeedsLayout() };
         }
+    }
+
+    // horizon-ios: a mouse's or trackpad's hovering and scrolling. Neither takes a finger, so the
+    // touches still reach the view.
+    fn follow_pointer(&self, mtm: MainThreadMarker) {
+        let hover = unsafe {
+            UIHoverGestureRecognizer::initWithTarget_action(
+                mtm.alloc(),
+                Some(self),
+                Some(sel!(hoverGesture:)),
+            )
+        };
+        unsafe { hover.setCancelsTouchesInView(false) };
+        hover.setDelegate(Some(ProtocolObject::from_ref(self)));
+        self.addGestureRecognizer(&hover);
+        self.ivars().hover_gesture_recognizer.replace(Some(hover));
+        let scroll = unsafe {
+            UIPanGestureRecognizer::initWithTarget_action(
+                mtm.alloc(),
+                Some(self),
+                Some(sel!(scrollGesture:)),
+            )
+        };
+        unsafe { scroll.setAllowedScrollTypesMask(UIScrollTypeMask::All) };
+        // No finger at all: only the scroll events.
+        scroll.setMaximumNumberOfTouches(0);
+        unsafe { scroll.setCancelsTouchesInView(false) };
+        scroll.setDelegate(Some(ProtocolObject::from_ref(self)));
+        self.addGestureRecognizer(&scroll);
+        self.ivars().scroll_gesture_recognizer.replace(Some(scroll));
+    }
+
+    // horizon-ios: a point in the window's coordinates, in physical pixels.
+    fn physical(&self, location: CGPoint) -> PhysicalPosition<f64> {
+        let scale_factor = self.contentScaleFactor();
+        PhysicalPosition::from_logical::<(f64, f64), f64>(
+            (location.x as _, location.y as _),
+            scale_factor as f64,
+        )
     }
 
     fn window(&self) -> Option<Retained<WinitUIWindow>> {
@@ -560,8 +684,9 @@ impl WinitView {
         }
     }
 
-    fn handle_touches(&self, touches: &NSSet<UITouch>) {
+    fn handle_touches(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
         let window = self.window().unwrap();
+        let mtm = MainThreadMarker::from(self);
         let mut touch_events = Vec::new();
         let os_supports_force = app_state::os_capabilities().force_touch;
         for touch in touches {
@@ -604,13 +729,13 @@ impl WinitView {
                 _ => panic!("unexpected touch phase: {phase:?}"),
             };
 
-            let physical_location = {
-                let scale_factor = self.contentScaleFactor();
-                PhysicalPosition::from_logical::<(f64, f64), f64>(
-                    (logical_location.x as _, logical_location.y as _),
-                    scale_factor as f64,
-                )
-            };
+            let physical_location = self.physical(logical_location);
+            // horizon-ios: a mouse's or trackpad's click is the mouse's, not a finger.
+            if touch_type == UITouchType::IndirectPointer {
+                let mask = event.map_or(0, |event| unsafe { event.buttonMask() }.0);
+                super::input::pointer_touch(mtm, touch_id, phase, physical_location, mask);
+                continue;
+            }
             touch_events.push(EventWrapper::StaticEvent(Event::WindowEvent {
                 window_id: RootWindowId(window.id()),
                 event: WindowEvent::Touch(Touch {
@@ -622,7 +747,6 @@ impl WinitView {
                 }),
             }));
         }
-        let mtm = MainThreadMarker::new().unwrap();
         app_state::handle_nonuser_events(mtm, touch_events);
     }
 

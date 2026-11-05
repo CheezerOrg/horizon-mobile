@@ -2,6 +2,7 @@
 
 mod app_state;
 mod event_loop;
+mod input; // horizon-ios: a hardware keyboard and a mouse
 mod monitor;
 mod notification_center;
 mod view;

@@ -347,12 +347,17 @@ impl ApplicationHandler for Game<'_> {
         } else {
             None
         };
+        self.touch_note_device(&event); // ios-port: touch controls.
         self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
         if let Some((event, modifiers)) = key {
             self.native_input_key(&event, modifiers);
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        // ios-port: touch controls.
+        if let DeviceEvent::MouseMotion { .. } = event {
+            self.touch_keyboard_mouse();
+        }
         // A composited view renders offscreen but its keyboard/mouse owner still
         // controls a visible native window. A headless offscreen run never does.
         if self.pending_save.is_none()

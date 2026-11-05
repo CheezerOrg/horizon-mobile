@@ -190,6 +190,14 @@ impl Game<'_> {
             if capture {
                 self.mouse.set_ignore_first_move();
             }
+            // ios-port: a mouse's pointer locks while the game grabs it (where
+            // iPadOS allows it); its motion turns the view as a desktop's does.
+            #[cfg(target_os = "ios")]
+            let _ = window.set_cursor_grab(if capture {
+                CursorGrabMode::Locked
+            } else {
+                CursorGrabMode::None
+            });
             self.captured = capture;
         } else if capture {
             self.mouse.set_ignore_first_move();

@@ -11,7 +11,9 @@
 //! (`textures/gui/bedrock`, which `ios/bedrock_controls.sh` downloads: Mojang's
 //! files, never in the repository), and as plain shapes otherwise. While the
 //! resources still load, the startup menu's title takes taps the same way
-//! (`Loading`), before `Game` exists.
+//! (`Loading`), before `Game` exists. A hardware keyboard's key or a mouse
+//! while playing hides the controls but the pause button, until a finger
+//! touches the screen again.
 use super::event_loop::EventLoopCtl;
 use super::input_trace::InputOrigin;
 use super::{Game, Loading, Screen};
@@ -54,6 +56,8 @@ const HOTBAR_KEYS: [KeyCode; 9] = [
 #[derive(Debug, Default)]
 pub(super) struct Touches {
     input: TouchInput,
+    /// A keyboard or a mouse plays: the on-screen controls step aside.
+    keyboard_mouse: bool,
 }
 
 impl Game<'_> {
@@ -76,7 +80,7 @@ impl Game<'_> {
                 0.0
             },
             left_handed: settings.left_handed,
-            minimal: !settings.enabled,
+            minimal: !settings.enabled || self.touch.keyboard_mouse,
             flying: player.is_some_and(|p| p.flying || p.fluids.was_touching_water),
         };
         Some((layout, batch.scale))
@@ -101,6 +105,9 @@ impl Game<'_> {
             return true;
         };
         let phase = phase(touch.phase);
+        if phase == Phase::Started {
+            self.touch.keyboard_mouse = false;
+        }
         let pos = [
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
@@ -128,6 +135,27 @@ impl Game<'_> {
             }
         }
         true
+    }
+
+    /// winit's own keyboard and mouse events (not those the fingers make):
+    /// a key pressed or the mouse used while playing hides the controls.
+    /// Over a screen a key may be the on-screen keyboard's.
+    pub(super) fn touch_note_device(&mut self, event: &WindowEvent) {
+        let device = match event {
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+            _ => false,
+        };
+        if device {
+            self.touch_keyboard_mouse();
+        }
+    }
+
+    /// A keyboard or a mouse was used (the mouse's own motion too).
+    pub(super) fn touch_keyboard_mouse(&mut self) {
+        if enabled() && self.touch_mode() == Mode::Play {
+            self.touch.keyboard_mouse = true;
+        }
     }
 
     /// `horizon-ctl touch start|move|end|cancel ID X Y`: a finger at GUI

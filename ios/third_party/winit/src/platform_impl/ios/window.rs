@@ -315,8 +315,10 @@ impl Inner {
         Err(ExternalError::NotSupported(NotSupportedError::new()))
     }
 
-    pub fn set_cursor_grab(&self, _: CursorGrabMode) -> Result<(), ExternalError> {
-        Err(ExternalError::NotSupported(NotSupportedError::new()))
+    // horizon-ios: a grab locks a mouse's pointer, where the system allows it.
+    pub fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), ExternalError> {
+        self.view_controller.set_prefers_pointer_locked(mode != CursorGrabMode::None);
+        Ok(())
     }
 
     pub fn set_cursor_visible(&self, _visible: bool) {
@@ -438,6 +440,8 @@ impl Inner {
         } else {
             unsafe {
                 self.view.resignFirstResponder();
+                // horizon-ios: the keys still reach the game (`input.rs`).
+                self.view_controller.becomeFirstResponder();
             }
         }
     }
