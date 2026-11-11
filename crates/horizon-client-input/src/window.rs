@@ -688,6 +688,15 @@ pub fn with_icon(attributes: winit::window::WindowAttributes) -> winit::window::
     #[cfg(target_os = "windows")]
     let attributes =
         winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attributes, icon);
+    // iOS draws the status bar over the game (at the top right in landscape) unless the view
+    // controller asks for it hidden; Info.plist's UIStatusBarHidden alone doesn't cover that.
+    #[cfg(target_os = "ios")]
+    let attributes = {
+        use winit::platform::ios::WindowAttributesExtIOS;
+        attributes
+            .with_prefers_status_bar_hidden(true)
+            .with_prefers_home_indicator_hidden(true)
+    };
     attributes
 }
 
