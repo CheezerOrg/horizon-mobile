@@ -40,6 +40,10 @@
 	</dict>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- ProMotion iPhones (120 Hz) cap an app at 60 Hz unless it opts in; iPads already run at the display's rate.
+	     The game's frame limit and VSync then follow the screen: UIScreen.maximumFramesPerSecond reports 120. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>UIRequiresFullScreen</key>
 	<true/>
 	<key>UIStatusBarHidden</key>

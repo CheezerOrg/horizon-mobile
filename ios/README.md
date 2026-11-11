@@ -32,6 +32,13 @@ ios/ipa.sh signed     # archived and exported, signed with Local.xcconfig's team
 Or `cd ios && xcodegen` and open `Horizon.xcodeproj` in Xcode (▶ builds the Rust library too).
 Debug builds use Cargo's `fast` profile; Archive uses `release`.
 
+## Refresh rate
+
+The game runs at the screen's native refresh rate: 120 Hz on ProMotion iPhones and iPads
+(`CADisableMinimumFrameDurationOnPhone` in `app/Info.plist` lifts the 60 Hz cap iOS gives an
+iPhone app), and 60 Hz where the screen or Low Power Mode says so. VSync presents at that rate;
+Max Framerate in Video Settings still caps it, and the F3 screen shows the display's rate.
+
 ## Signing in in the game
 
 Online-mode servers need the account that owns Minecraft. With `HORIZON_MSA_CLIENT_ID` set in
